@@ -52,3 +52,51 @@ mod tests {
 pub mod kdotool;
 pub mod gnome;
 pub mod x11;
+
+pub fn select_backend(
+    current_desktop: Option<&str>,
+    session_type: Option<&str>,
+    display: Option<&str>,
+) -> Option<Box<dyn WindowBackend>> {
+    let desktop = current_desktop.unwrap_or_default().to_lowercase();
+    if desktop.contains("kde") {
+        return Some(Box::new(kdotool::KdotoolBackend));
+    }
+    if desktop.contains("gnome") {
+        return Some(Box::new(gnome::GnomeWindowCallsBackend));
+    }
+    let _ = session_type;
+    if display.is_some() {
+        return Some(Box::new(x11::X11Backend));
+    }
+    None
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    #[test]
+    fn picks_kdotool_for_kde() {
+        let backend = select_backend(Some("KDE"), Some("wayland"), None);
+        assert!(backend.is_some());
+    }
+
+    #[test]
+    fn picks_gnome_for_gnome_shell() {
+        let backend = select_backend(Some("GNOME"), Some("wayland"), None);
+        assert!(backend.is_some());
+    }
+
+    #[test]
+    fn picks_x11_fallback_when_display_is_set() {
+        let backend = select_backend(Some("XFCE"), Some("x11"), Some(":0"));
+        assert!(backend.is_some());
+    }
+
+    #[test]
+    fn refuses_to_guess_with_no_recognizable_signal() {
+        let backend = select_backend(None, None, None);
+        assert!(backend.is_none());
+    }
+}
