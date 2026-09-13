@@ -104,6 +104,24 @@ fn resolve_target(
     Some((class, entry.clone()))
 }
 
+/// The class to retry the window search with when `class` (the app's own
+/// resolved StartupWMClass/id default) matches no windows: the desktop
+/// entry's own id, but only when `class` is that unmodified default (not an
+/// explicit `class_override` - a user-typed override that finds nothing
+/// should stay respected as-is, not silently second-guessed) and the id is
+/// actually a different value worth trying. This exists because some apps'
+/// real running window class diverges from what their own `.desktop` file
+/// declares - e.g. Chrome PWAs report their window's app_id as the desktop
+/// file's own id (`chrome-<ext-id>-Default`) under native Wayland, not the
+/// `StartupWMClass=crx_<ext-id>` they ship, which is an X11-era convention.
+fn id_fallback_class<'a>(class: &str, entry: &'a AppEntry) -> Option<&'a str> {
+    if class == entry.window_class && entry.window_class != entry.id {
+        Some(&entry.id)
+    } else {
+        None
+    }
+}
+
 /// The outcome of one orchestration pass (list windows -> decide -> dispatch),
 /// kept separate from any `Instance`/logging side effects so it can be tested
 /// against a fake `WindowBackend` without a live OpenDeck connection.
@@ -135,11 +153,19 @@ async fn orchestrate(
         return RunOutcome::NoAppSelected;
     };
 
-    let windows = match backend.list_windows(&class).await {
+    let mut windows = match backend.list_windows(&class).await {
         Ok(w) => w,
         Err(BackendError::Unavailable(msg)) => return RunOutcome::BackendUnavailable(msg),
         Err(BackendError::CommandFailed(msg)) => return RunOutcome::ListWindowsFailed(msg),
     };
+
+    if windows.is_empty()
+        && let Some(fallback_class) = id_fallback_class(&class, &entry)
+        && let Ok(fallback_windows) = backend.list_windows(fallback_class).await
+        && !fallback_windows.is_empty()
+    {
+        windows = fallback_windows;
+    }
 
     let active = if windows.is_empty() {
         None
@@ -509,6 +535,11 @@ mod tests {
     #[derive(Default)]
     struct RecordingFakeBackend {
         windows: Vec<WindowId>,
+        /// When set, `list_windows` looks the queried class up here instead
+        /// of returning `windows` unconditionally - lets a test give
+        /// different classes different results, e.g. to simulate the id
+        /// fallback finding windows that the primary class search didn't.
+        windows_by_class: Option<std::collections::HashMap<String, Vec<WindowId>>>,
         active: Option<WindowId>,
         list_windows_err: Option<BackendError>,
         activate_calls: Mutex<Vec<WindowId>>,
@@ -517,14 +548,17 @@ mod tests {
 
     #[async_trait]
     impl WindowBackend for RecordingFakeBackend {
-        async fn list_windows(&self, _class: &str) -> Result<Vec<WindowId>, BackendError> {
+        async fn list_windows(&self, class: &str) -> Result<Vec<WindowId>, BackendError> {
             if let Some(err) = &self.list_windows_err {
                 return Err(match err {
                     BackendError::Unavailable(m) => BackendError::Unavailable(m.clone()),
                     BackendError::CommandFailed(m) => BackendError::CommandFailed(m.clone()),
                 });
             }
-            Ok(self.windows.clone())
+            match &self.windows_by_class {
+                Some(map) => Ok(map.get(class).cloned().unwrap_or_default()),
+                None => Ok(self.windows.clone()),
+            }
         }
 
         async fn activate(&self, id: &WindowId) -> Result<(), BackendError> {
@@ -628,6 +662,83 @@ mod tests {
             RunOutcome::BackendUnavailable("no wmctrl".to_string())
         );
         assert!(backend.activate_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn id_fallback_offered_when_default_class_differs_from_entry_id() {
+        let entry = app("chrome-abc-Default", "crx_abc");
+        assert_eq!(
+            id_fallback_class("crx_abc", &entry),
+            Some("chrome-abc-Default")
+        );
+    }
+
+    #[test]
+    fn id_fallback_not_offered_when_class_and_id_already_match() {
+        // No StartupWMClass case (e.g. the Plex snap): window_class already
+        // equals id, so there's no distinct second value worth trying.
+        let entry = app("plex-desktop_plex-desktop", "plex-desktop_plex-desktop");
+        assert_eq!(id_fallback_class("plex-desktop_plex-desktop", &entry), None);
+    }
+
+    #[test]
+    fn id_fallback_not_offered_when_class_was_overridden() {
+        // `class` here no longer equals `entry.window_class`, meaning a
+        // `class_override` won out in `resolve_target` - an explicit user
+        // override that finds nothing should stay respected, not
+        // second-guessed with the entry id.
+        let entry = app("chrome-abc-Default", "crx_abc");
+        assert_eq!(id_fallback_class("Navigator", &entry), None);
+    }
+
+    #[tokio::test]
+    async fn orchestrate_falls_back_to_entry_id_when_startup_wm_class_matches_nothing() {
+        let mut windows_by_class = std::collections::HashMap::new();
+        windows_by_class.insert("crx_abc".to_string(), vec![]);
+        windows_by_class.insert("chrome-abc-Default".to_string(), vec!["w1".to_string()]);
+        let backend = RecordingFakeBackend {
+            windows_by_class: Some(windows_by_class),
+            ..Default::default()
+        };
+        let apps = vec![app("chrome-abc-Default", "crx_abc")];
+        let settings = settings("chrome-abc-Default", true, true);
+
+        let outcome = orchestrate(&backend, &settings, &apps).await;
+
+        assert_eq!(outcome, RunOutcome::Activated("w1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn orchestrate_launches_when_neither_class_nor_id_fallback_matches() {
+        let backend = RecordingFakeBackend {
+            windows_by_class: Some(std::collections::HashMap::new()),
+            ..Default::default()
+        };
+        let apps = vec![app("chrome-abc-Default", "crx_abc")];
+        let settings = settings("chrome-abc-Default", true, true);
+
+        let outcome = orchestrate(&backend, &settings, &apps).await;
+
+        assert_eq!(outcome, RunOutcome::Launched);
+    }
+
+    #[tokio::test]
+    async fn orchestrate_does_not_fall_back_when_class_was_explicitly_overridden() {
+        let mut windows_by_class = std::collections::HashMap::new();
+        // The override matches nothing, but the entry id would - the
+        // fallback must not kick in and silently ignore the user's override.
+        windows_by_class.insert("chrome-abc-Default".to_string(), vec!["w1".to_string()]);
+        let backend = RecordingFakeBackend {
+            windows_by_class: Some(windows_by_class),
+            ..Default::default()
+        };
+        let apps = vec![app("chrome-abc-Default", "crx_abc")];
+        let mut settings = settings("chrome-abc-Default", true, true);
+        settings.class_override = Some("some-typo".to_string());
+
+        let outcome = orchestrate(&backend, &settings, &apps).await;
+
+        assert_eq!(outcome, RunOutcome::Launched);
     }
 
     #[tokio::test]
