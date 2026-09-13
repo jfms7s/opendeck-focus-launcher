@@ -8,20 +8,12 @@ pub enum IconEncodeError {
 }
 
 /// Builds the `image` string OpenDeck's `setImage` event expects from a
-/// resolved icon file on disk: raw SVG markup for `.svg` icons (the Stream
-/// Deck SDK accepts SVG directly, no encoding needed), or a base64 data URI
-/// for anything else - PNG is by far the common case for icon themes' raster
-/// fallback, but JPEG/BMP are also valid `setImage` mime types.
+/// resolved icon file on disk: always a base64 data URI. OpenDeck's
+/// `setImage` handler (src-tauri/src/events/inbound/states.rs) only treats
+/// `image` as inline data when it starts with `"data:"` - anything else is
+/// treated as a relative filename inside the plugin's own bundle directory,
+/// so SVG markup must be encoded too rather than passed through raw.
 pub fn build_image_payload(path: &Path) -> Result<String, IconEncodeError> {
-    let is_svg = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
-
-    if is_svg {
-        return std::fs::read_to_string(path).map_err(IconEncodeError::Read);
-    }
-
     let bytes = std::fs::read(path).map_err(IconEncodeError::Read)?;
     let mime = match path
         .extension()
@@ -29,6 +21,7 @@ pub fn build_image_payload(path: &Path) -> Result<String, IconEncodeError> {
         .map(|e| e.to_ascii_lowercase())
         .as_deref()
     {
+        Some("svg") => "image/svg+xml",
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("bmp") => "image/bmp",
         _ => "image/png",
@@ -86,7 +79,13 @@ mod tests {
     }
 
     #[test]
-    fn passes_svg_through_as_raw_markup_unencoded() {
+    fn encodes_an_svg_icon_as_a_base64_data_uri() {
+        // OpenDeck's setImage handler (src-tauri/src/events/inbound/states.rs)
+        // only treats `image` as inline data when it starts with "data:" -
+        // anything else is treated as a relative filename inside the
+        // plugin's own bundle directory. Raw SVG markup doesn't start with
+        // "data:", so it must be base64-encoded like every other format
+        // rather than passed through unencoded.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("icon.svg");
         let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
@@ -94,7 +93,12 @@ mod tests {
 
         let payload = build_image_payload(&path).unwrap();
 
-        assert_eq!(payload, svg);
+        let prefix = "data:image/svg+xml;base64,";
+        assert!(payload.starts_with(prefix), "got: {payload}");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&payload[prefix.len()..])
+            .unwrap();
+        assert_eq!(decoded, svg.as_bytes());
     }
 
     #[test]
