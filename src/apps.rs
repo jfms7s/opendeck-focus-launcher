@@ -1,18 +1,12 @@
 use freedesktop_desktop_entry::{DesktopEntry, Iter, default_paths};
+use std::collections::HashSet;
 
 #[derive(Clone, serde::Serialize)]
 pub struct AppEntry {
     pub id: String,
     pub name: String,
     pub window_class: String,
-    pub icon: Option<String>,
     pub exec: String,
-}
-
-impl AppEntry {
-    pub fn exec_hint(&self) -> String {
-        self.exec.clone()
-    }
 }
 
 /// Strips the standard Exec field placeholders (%f, %F, %u, %U, %d, %D, %n, %N,
@@ -54,9 +48,20 @@ fn list_installed_apps_from_paths<I: IntoIterator<Item = std::path::PathBuf>>(
     // (a slice), not a reference to the `Vec` directly, so we pass
     // `locales.as_slice()` rather than `&locales` to avoid relying on
     // deref coercion through the `Option` wrapper.
+    // XDG data dirs can legitimately list the same app id twice (e.g. a
+    // Flatpak override in ~/.local/share/applications shadowing the system
+    // copy in /usr/share/applications) - `default_paths()`/`Iter` walk user
+    // dirs before system dirs, i.e. in XDG precedence order, so keeping the
+    // first occurrence of each id and dropping later ones is correct.
+    let mut seen_ids: HashSet<String> = HashSet::new();
     let mut apps: Vec<AppEntry> = Iter::new(paths.into_iter())
         .entries(Some(locales.as_slice()))
-        .filter(|entry: &DesktopEntry| !entry.no_display() && !entry.hidden())
+        .filter(|entry: &DesktopEntry| {
+            // `Type=Link`/`Type=Directory` entries have no `Exec=`, so
+            // surfacing them in the dropdown would silently no-op on select.
+            !entry.no_display() && !entry.hidden() && entry.type_() == Some("Application")
+        })
+        .filter(|entry| seen_ids.insert(entry.id().to_string()))
         .map(|entry| AppEntry {
             id: entry.id().to_string(),
             name: entry
@@ -64,7 +69,6 @@ fn list_installed_apps_from_paths<I: IntoIterator<Item = std::path::PathBuf>>(
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| entry.id().to_string()),
             window_class: resolve_window_class(entry.id(), entry.startup_wm_class()),
-            icon: entry.icon().map(|i| i.to_string()),
             exec: entry.exec().unwrap_or_default().to_string(),
         })
         .collect();
@@ -162,5 +166,53 @@ mod tests {
 
         let apps = list_installed_apps_from_paths(vec![dir.path().to_path_buf()]);
         assert!(apps.is_empty());
+    }
+
+    #[test]
+    fn hides_non_application_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let apps_dir = dir.path().join("applications");
+        std::fs::create_dir_all(&apps_dir).unwrap();
+        let mut file = std::fs::File::create(apps_dir.join("a-link.desktop")).unwrap();
+        writeln!(
+            file,
+            "[Desktop Entry]\nType=Link\nName=Some Link\nURL=https://example.com\n"
+        )
+        .unwrap();
+
+        let apps = list_installed_apps_from_paths(vec![dir.path().to_path_buf()]);
+        assert!(apps.is_empty());
+    }
+
+    #[test]
+    fn dedups_an_id_present_in_two_search_paths_keeping_the_first() {
+        let user_dir = tempfile::tempdir().unwrap();
+        let user_apps = user_dir.path().join("applications");
+        std::fs::create_dir_all(&user_apps).unwrap();
+        let mut user_file = std::fs::File::create(user_apps.join("dup-app.desktop")).unwrap();
+        writeln!(
+            user_file,
+            "[Desktop Entry]\nType=Application\nName=User Override\nExec=dup-app\n"
+        )
+        .unwrap();
+
+        let system_dir = tempfile::tempdir().unwrap();
+        let system_apps = system_dir.path().join("applications");
+        std::fs::create_dir_all(&system_apps).unwrap();
+        let mut system_file = std::fs::File::create(system_apps.join("dup-app.desktop")).unwrap();
+        writeln!(
+            system_file,
+            "[Desktop Entry]\nType=Application\nName=System Copy\nExec=dup-app\n"
+        )
+        .unwrap();
+
+        // Search the user dir first, matching real XDG precedence order.
+        let apps = list_installed_apps_from_paths(vec![
+            user_dir.path().to_path_buf(),
+            system_dir.path().to_path_buf(),
+        ]);
+
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].name, "User Override");
     }
 }

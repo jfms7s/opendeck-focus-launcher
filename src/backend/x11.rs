@@ -41,10 +41,29 @@ async fn run(cmd: &str, args: &[&str]) -> Result<std::process::Output, BackendEr
     })
 }
 
+/// Checks a completed command's exit status, turning a non-zero exit into a
+/// `CommandFailed` (including stderr when present) rather than letting the
+/// caller silently treat empty/partial stdout as "nothing found". `wmctrl`
+/// (unlike `kdotool search`) exits 0 on success and non-zero only on a real
+/// failure, so this check is reliable for every wmctrl/xdotool call here.
+fn check_status(output: &std::process::Output, cmd: &str) -> Result<(), BackendError> {
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    Err(BackendError::CommandFailed(if stderr.is_empty() {
+        format!("{cmd} exited with {}", output.status)
+    } else {
+        format!("{cmd} exited with {}: {stderr}", output.status)
+    }))
+}
+
 #[async_trait]
 impl WindowBackend for X11Backend {
     async fn list_windows(&self, class: &str) -> Result<Vec<WindowId>, BackendError> {
         let output = run("wmctrl", &["-l", "-x"]).await?;
+        check_status(&output, "wmctrl -l -x")?;
         Ok(parse_wmctrl_list(
             &String::from_utf8_lossy(&output.stdout),
             class,
@@ -52,13 +71,13 @@ impl WindowBackend for X11Backend {
     }
 
     async fn activate(&self, id: &WindowId) -> Result<(), BackendError> {
-        run("wmctrl", &["-i", "-a", id]).await?;
-        Ok(())
+        let output = run("wmctrl", &["-i", "-a", id]).await?;
+        check_status(&output, "wmctrl -i -a")
     }
 
     async fn minimize(&self, id: &WindowId) -> Result<(), BackendError> {
-        run("xdotool", &["windowminimize", id]).await?;
-        Ok(())
+        let output = run("xdotool", &["windowminimize", id]).await?;
+        check_status(&output, "xdotool windowminimize")
     }
 
     async fn active_window(&self) -> Result<Option<WindowId>, BackendError> {
@@ -103,5 +122,25 @@ mod tests {
         assert_eq!(parse_active_window("0x0\n"), None);
         assert_eq!(parse_active_window(""), None);
         assert_eq!(parse_active_window("\n"), None);
+    }
+
+    #[test]
+    fn check_status_ok_on_success() {
+        let output = std::process::Command::new("true").output().unwrap();
+        assert!(check_status(&output, "true").is_ok());
+    }
+
+    #[test]
+    fn check_status_reports_command_failed_with_stderr_on_non_zero_exit() {
+        let output = std::process::Command::new("sh")
+            .args(["-c", "echo 'no such window' 1>&2; exit 1"])
+            .output()
+            .unwrap();
+        match check_status(&output, "wmctrl -i -a") {
+            Err(BackendError::CommandFailed(msg)) => {
+                assert!(msg.contains("no such window"), "message was: {msg}");
+            }
+            other => panic!("expected CommandFailed, got {other:?}"),
+        }
     }
 }

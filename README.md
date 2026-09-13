@@ -36,8 +36,12 @@ OpenDeck) or unzip it into `~/.config/opendeck/plugins/` and restart OpenDeck
 3. If the app reports the wrong window class (rare), expand "Window class
    override" and set it by hand.
 4. Leave "Cycle to next window" and "Minimize when already focused" checked
-   for the default behavior described above, or uncheck either to just
-   always focus the first window.
+   for the default behavior described above. Unchecking "Cycle to next
+   window" means a repeat press does nothing (instead of cycling) once the
+   app has several windows open and one is already focused; unchecking
+   "Minimize when already focused" means a repeat press does nothing
+   (instead of minimizing) when the app has a single window and it's already
+   focused.
 
 ## Manual smoke-test checklist
 
