@@ -48,3 +48,5 @@ mod tests {
         assert!(matches!(result, Err(BackendError::Unavailable(_))));
     }
 }
+
+pub mod kdotool;
