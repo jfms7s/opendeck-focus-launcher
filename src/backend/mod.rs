@@ -49,8 +49,8 @@ mod tests {
     }
 }
 
-pub mod kdotool;
 pub mod gnome;
+pub mod kdotool;
 pub mod x11;
 
 pub fn select_backend(

@@ -71,7 +71,10 @@ mod tests {
     #[test]
     fn focused_lone_window_is_noop_when_minimize_disabled() {
         let windows = vec![id("w1")];
-        assert_eq!(decide(&windows, Some(&id("w1")), true, false), Decision::NoOp);
+        assert_eq!(
+            decide(&windows, Some(&id("w1")), true, false),
+            Decision::NoOp
+        );
     }
 
     #[test]
@@ -91,7 +94,10 @@ mod tests {
     #[test]
     fn focused_window_is_noop_when_cycle_disabled_and_multiple_exist() {
         let windows = vec![id("w1"), id("w2")];
-        assert_eq!(decide(&windows, Some(&id("w1")), false, true), Decision::NoOp);
+        assert_eq!(
+            decide(&windows, Some(&id("w1")), false, true),
+            Decision::NoOp
+        );
     }
 
     #[test]

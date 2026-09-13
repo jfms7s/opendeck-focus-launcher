@@ -16,9 +16,7 @@ fn parse_wmctrl_list(stdout: &str, class: &str) -> Vec<WindowId> {
             let id = parts.next()?;
             let _desktop = parts.next()?;
             let wm_class = parts.next()?.to_lowercase();
-            let matches = wm_class
-                .split('.')
-                .any(|part| part.contains(&class_lower));
+            let matches = wm_class.split('.').any(|part| part.contains(&class_lower));
             matches.then(|| id.to_string())
         })
         .collect()
@@ -47,7 +45,10 @@ async fn run(cmd: &str, args: &[&str]) -> Result<std::process::Output, BackendEr
 impl WindowBackend for X11Backend {
     async fn list_windows(&self, class: &str) -> Result<Vec<WindowId>, BackendError> {
         let output = run("wmctrl", &["-l", "-x"]).await?;
-        Ok(parse_wmctrl_list(&String::from_utf8_lossy(&output.stdout), class))
+        Ok(parse_wmctrl_list(
+            &String::from_utf8_lossy(&output.stdout),
+            class,
+        ))
     }
 
     async fn activate(&self, id: &WindowId) -> Result<(), BackendError> {
@@ -80,7 +81,10 @@ mod tests {
     #[test]
     fn parses_matching_window_by_instance_or_class() {
         let stdout = "0x03e00007  0 firefox.Firefox        myhost Mozilla Firefox\n0x01c00003  0 kate.kate myhost Kate\n";
-        assert_eq!(parse_wmctrl_list(stdout, "firefox"), vec!["0x03e00007".to_string()]);
+        assert_eq!(
+            parse_wmctrl_list(stdout, "firefox"),
+            vec!["0x03e00007".to_string()]
+        );
     }
 
     #[test]

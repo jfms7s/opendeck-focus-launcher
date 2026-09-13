@@ -1,6 +1,6 @@
-use crate::apps::{launch_app, list_installed_apps, AppEntry};
-use crate::backend::{select_backend, BackendError, WindowBackend};
-use crate::decision::{decide, Decision};
+use crate::apps::{AppEntry, launch_app, list_installed_apps};
+use crate::backend::{BackendError, WindowBackend, select_backend};
+use crate::decision::{Decision, decide};
 use async_trait::async_trait;
 use openaction::{Action, Instance, OpenActionResult};
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,10 @@ fn default_true() -> bool {
 /// The class to search for and the AppEntry to launch when there's no window -
 /// resolved once per key press from the settings + the current installed-apps
 /// list, so `key_up` itself is a thin wrapper around `decide()`.
-fn resolve_target(settings: &FocusOrLaunchSettings, apps: &[AppEntry]) -> Option<(String, AppEntry)> {
+fn resolve_target(
+    settings: &FocusOrLaunchSettings,
+    apps: &[AppEntry],
+) -> Option<(String, AppEntry)> {
     let app_id = settings.app.as_ref()?;
     let entry = apps.iter().find(|a| &a.id == app_id)?;
     let class = settings
@@ -101,18 +104,30 @@ impl Action for FocusOrLaunchAction {
     const UUID: &'static str = "com.jfms7s.focuslauncher.focusorlaunch";
     type Settings = FocusOrLaunchSettings;
 
-    async fn will_appear(&self, instance: &Instance, _settings: &Self::Settings) -> OpenActionResult<()> {
+    async fn will_appear(
+        &self,
+        instance: &Instance,
+        _settings: &Self::Settings,
+    ) -> OpenActionResult<()> {
         let apps = list_installed_apps();
         let payload = serde_json::json!({ "apps": apps.iter().map(|a| serde_json::json!({"id": a.id, "name": a.name})).collect::<Vec<_>>() });
         instance.send_to_property_inspector(&payload).await?;
         Ok(())
     }
 
-    async fn key_up(&self, _instance: &Instance, settings: &Self::Settings) -> OpenActionResult<()> {
+    async fn key_up(
+        &self,
+        _instance: &Instance,
+        settings: &Self::Settings,
+    ) -> OpenActionResult<()> {
         self.run_for_settings(settings).await
     }
 
-    async fn dial_up(&self, _instance: &Instance, settings: &Self::Settings) -> OpenActionResult<()> {
+    async fn dial_up(
+        &self,
+        _instance: &Instance,
+        settings: &Self::Settings,
+    ) -> OpenActionResult<()> {
         self.run_for_settings(settings).await
     }
 }

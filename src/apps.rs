@@ -1,4 +1,4 @@
-use freedesktop_desktop_entry::{default_paths, DesktopEntry, Iter};
+use freedesktop_desktop_entry::{DesktopEntry, Iter, default_paths};
 
 #[derive(Clone, serde::Serialize)]
 pub struct AppEntry {
@@ -123,7 +123,10 @@ mod tests {
     #[test]
     fn resolve_window_class_falls_back_to_entry_id() {
         assert_eq!(resolve_window_class("org.kde.kate", None), "org.kde.kate");
-        assert_eq!(resolve_window_class("org.kde.kate", Some("")), "org.kde.kate");
+        assert_eq!(
+            resolve_window_class("org.kde.kate", Some("")),
+            "org.kde.kate"
+        );
     }
 
     #[test]

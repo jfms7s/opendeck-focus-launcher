@@ -47,7 +47,9 @@ impl WindowBackend for KdotoolBackend {
         // kdotool exits non-zero both when nothing matches and on a real error;
         // treat non-UTF8-free stdout as authoritative either way (an empty
         // stdout means "no windows", which is a normal, non-error outcome).
-        Ok(parse_search_output(&String::from_utf8_lossy(&output.stdout)))
+        Ok(parse_search_output(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
     }
 
     async fn activate(&self, id: &WindowId) -> Result<(), BackendError> {
@@ -72,7 +74,8 @@ mod tests {
 
     #[test]
     fn parses_multiple_window_ids() {
-        let stdout = "{aaaaaaaa-0000-0000-0000-000000000001}\n{bbbbbbbb-0000-0000-0000-000000000002}\n";
+        let stdout =
+            "{aaaaaaaa-0000-0000-0000-000000000001}\n{bbbbbbbb-0000-0000-0000-000000000002}\n";
         assert_eq!(
             parse_search_output(stdout),
             vec![

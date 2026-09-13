@@ -4,7 +4,7 @@ mod backend;
 mod decision;
 
 use action::FocusOrLaunchAction;
-use openaction::{register_action, run, OpenActionResult};
+use openaction::{OpenActionResult, register_action, run};
 
 #[tokio::main]
 async fn main() -> OpenActionResult<()> {
