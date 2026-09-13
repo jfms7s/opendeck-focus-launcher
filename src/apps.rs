@@ -1,10 +1,18 @@
 use freedesktop_desktop_entry::{default_paths, DesktopEntry, Iter};
 
+#[derive(Clone, serde::Serialize)]
 pub struct AppEntry {
     pub id: String,
     pub name: String,
     pub window_class: String,
     pub icon: Option<String>,
+    pub exec: String,
+}
+
+impl AppEntry {
+    pub fn exec_hint(&self) -> String {
+        self.exec.clone()
+    }
 }
 
 /// Strips the standard Exec field placeholders (%f, %F, %u, %U, %d, %D, %n, %N,
@@ -57,6 +65,7 @@ fn list_installed_apps_from_paths<I: IntoIterator<Item = std::path::PathBuf>>(
                 .unwrap_or_else(|| entry.id().to_string()),
             window_class: resolve_window_class(entry.id(), entry.startup_wm_class()),
             icon: entry.icon().map(|i| i.to_string()),
+            exec: entry.exec().unwrap_or_default().to_string(),
         })
         .collect();
     apps.sort_by_key(|a| a.name.to_lowercase());
@@ -133,6 +142,7 @@ mod tests {
         assert_eq!(apps.len(), 1);
         assert_eq!(apps[0].name, "Test App");
         assert_eq!(apps[0].window_class, "testapp");
+        assert_eq!(apps[0].exec, "test-app %u");
     }
 
     #[test]
