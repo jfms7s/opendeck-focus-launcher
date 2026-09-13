@@ -1,6 +1,6 @@
 [package]
 name = "opendeck-focus-launcher"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license = "MIT"
 description = "OpenDeck plugin: focus an app's window if it has one, else launch it"
