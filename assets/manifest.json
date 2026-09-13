@@ -1,0 +1,24 @@
+{
+	"Name": "Focus Launcher",
+	"Author": "jfms7s",
+	"Version": "0.1.0",
+	"Category": "App Launcher",
+	"Icon": "icons/icon",
+	"OS": [{ "Platform": "linux" }],
+	"CodePaths": {
+		"x86_64-unknown-linux-gnu": "opendeck-focus-launcher-x86_64-unknown-linux-gnu",
+		"aarch64-unknown-linux-gnu": "opendeck-focus-launcher-aarch64-unknown-linux-gnu"
+	},
+	"CodePathLin": "opendeck-focus-launcher-x86_64-unknown-linux-gnu",
+	"Actions": [
+		{
+			"UUID": "com.jfms7s.focuslauncher.focusorlaunch",
+			"Name": "Focus or Launch",
+			"Icon": "icons/icon",
+			"Tooltip": "Focus this app's window, or launch it if it has none",
+			"Controllers": ["Keypad", "Encoder"],
+			"PropertyInspectorPath": "propertyInspector/index.html",
+			"States": [{ "Image": "icons/actionDefaultImage" }]
+		}
+	]
+}
