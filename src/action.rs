@@ -1,9 +1,11 @@
 use crate::apps::{AppEntry, launch_app, list_installed_apps};
 use crate::backend::{BackendError, WindowBackend, WindowId, select_backend};
 use crate::decision::{Decision, decide};
+use crate::icon::build_image_payload;
 use async_trait::async_trait;
 use openaction::{Action, Instance, OpenActionResult};
 use serde::{Deserialize, Serialize};
+use tux_icons::icon_fetcher::IconFetcher;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FocusOrLaunchSettings {
@@ -13,6 +15,19 @@ pub struct FocusOrLaunchSettings {
     pub cycle_windows: bool,
     #[serde(default = "default_true")]
     pub minimize_when_focused: bool,
+    /// Overrides the key's title (`instance.set_title`) instead of the app's
+    /// own `.desktop` `Name=`.
+    pub name_override: Option<String>,
+    /// An icon *name* to resolve instead of the app's own icon - looked up
+    /// via `tux_icons::IconFetcher::get_icon_path` rather than
+    /// `get_icon_path_from_desktop`.
+    pub icon_override: Option<String>,
+    /// Overrides the launch command instead of the app's own `.desktop`
+    /// `Exec=`.
+    pub exec_override: Option<String>,
+    /// Extra arguments appended when launching - passed straight through as
+    /// `apps::launch_app`'s `args` parameter.
+    pub custom_args: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -32,7 +47,47 @@ impl Default for FocusOrLaunchSettings {
             class_override: None,
             cycle_windows: default_true(),
             minimize_when_focused: default_true(),
+            name_override: None,
+            icon_override: None,
+            exec_override: None,
+            custom_args: None,
         }
+    }
+}
+
+/// Resolves an optional override field against a fallback: an empty string
+/// (as a cleared HTML text input naturally sends) is treated the same as
+/// unset, matching `class_override`'s existing behavior.
+fn resolve_override(override_value: &Option<String>, fallback: &str) -> String {
+    override_value
+        .clone()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// The command line to launch: `exec_override` if set, else the app's own
+/// `Exec=`.
+fn resolve_exec(settings: &FocusOrLaunchSettings, entry: &AppEntry) -> String {
+    resolve_override(&settings.exec_override, &entry.exec)
+}
+
+/// The key's title: `name_override` if set, else the app's own `Name=`.
+fn resolve_display_name(settings: &FocusOrLaunchSettings, entry: &AppEntry) -> String {
+    resolve_override(&settings.name_override, &entry.name)
+}
+
+/// Where to resolve the key's icon from: an explicit icon *name*
+/// (`icon_override`), or the selected app's own `.desktop` file.
+#[derive(Debug, PartialEq, Eq)]
+enum IconSource {
+    Named(String),
+    FromDesktopFile(std::path::PathBuf),
+}
+
+fn resolve_icon_source(settings: &FocusOrLaunchSettings, entry: &AppEntry) -> IconSource {
+    match settings.icon_override.clone().filter(|v| !v.is_empty()) {
+        Some(name) => IconSource::Named(name),
+        None => IconSource::FromDesktopFile(entry.path.clone()),
     }
 }
 
@@ -45,11 +100,7 @@ fn resolve_target(
 ) -> Option<(String, AppEntry)> {
     let app_id = settings.app.as_ref()?;
     let entry = apps.iter().find(|a| &a.id == app_id)?;
-    let class = settings
-        .class_override
-        .clone()
-        .filter(|c| !c.is_empty())
-        .unwrap_or_else(|| entry.window_class.clone());
+    let class = resolve_override(&settings.class_override, &entry.window_class);
     Some((class, entry.clone()))
 }
 
@@ -102,10 +153,13 @@ async fn orchestrate(
         settings.cycle_windows,
         settings.minimize_when_focused,
     ) {
-        Decision::Launch => match launch_app(&entry.exec, None).await {
-            Ok(()) => RunOutcome::Launched,
-            Err(e) => RunOutcome::LaunchFailed(e.to_string()),
-        },
+        Decision::Launch => {
+            let exec = resolve_exec(settings, &entry);
+            match launch_app(&exec, settings.custom_args.as_deref()).await {
+                Ok(()) => RunOutcome::Launched,
+                Err(e) => RunOutcome::LaunchFailed(e.to_string()),
+            }
+        }
         Decision::Activate(id) => match backend.activate(&id).await {
             Ok(()) => RunOutcome::Activated(id),
             Err(e) => RunOutcome::ActivateFailed(id, e.to_string()),
@@ -149,8 +203,65 @@ impl FocusOrLaunchAction {
     /// again at that point, since nobody was listening the first time).
     async fn send_apps_to_pi(&self, instance: &Instance) -> OpenActionResult<()> {
         let apps = list_installed_apps();
-        let payload = serde_json::json!({ "apps": apps.iter().map(|a| serde_json::json!({"id": a.id, "name": a.name})).collect::<Vec<_>>() });
+        let payload = serde_json::json!({
+            "apps": apps
+                .iter()
+                .map(|a| serde_json::json!({
+                    "id": a.id,
+                    "name": a.name,
+                    "path": a.path.to_string_lossy(),
+                    "exec": a.exec,
+                }))
+                .collect::<Vec<_>>()
+        });
         instance.send_to_property_inspector(&payload).await?;
+        Ok(())
+    }
+
+    /// Sets the key's title and image from the currently selected app plus
+    /// any overrides. Called whenever a key might have new settings to show
+    /// (appearing, its PI opening, or settings being saved) - if no app is
+    /// selected yet, this is a no-op (nothing to show). Icon resolution and
+    /// encoding failures are logged and skipped rather than failing the
+    /// whole call: a key with the wrong icon is still usable, one that never
+    /// gets its title set because of an unrelated icon problem is worse.
+    async fn apply_visuals(
+        &self,
+        instance: &Instance,
+        settings: &FocusOrLaunchSettings,
+    ) -> OpenActionResult<()> {
+        let apps = list_installed_apps();
+        let Some(entry) = settings
+            .app
+            .as_ref()
+            .and_then(|id| apps.iter().find(|a| &a.id == id))
+        else {
+            return Ok(());
+        };
+
+        instance
+            .set_title(Some(resolve_display_name(settings, entry)), None)
+            .await?;
+
+        let icon_path = match resolve_icon_source(settings, entry) {
+            IconSource::Named(name) => IconFetcher::new().get_icon_path(name),
+            IconSource::FromDesktopFile(path) => {
+                IconFetcher::new().get_icon_path_from_desktop(path)
+            }
+        };
+        match icon_path {
+            Some(path) => match build_image_payload(&path) {
+                Ok(payload) => {
+                    instance.set_image(Some(payload), None).await?;
+                }
+                Err(crate::icon::IconEncodeError::Read(io_err)) => {
+                    log::warn!("failed to read icon at {}: {io_err}", path.display());
+                }
+            },
+            None => {
+                log::warn!("no icon resolved for {}", entry.id);
+            }
+        }
         Ok(())
     }
 
@@ -206,17 +317,27 @@ impl Action for FocusOrLaunchAction {
     async fn will_appear(
         &self,
         instance: &Instance,
-        _settings: &Self::Settings,
+        settings: &Self::Settings,
     ) -> OpenActionResult<()> {
-        self.send_apps_to_pi(instance).await
+        self.send_apps_to_pi(instance).await?;
+        self.apply_visuals(instance, settings).await
     }
 
     async fn property_inspector_did_appear(
         &self,
         instance: &Instance,
-        _settings: &Self::Settings,
+        settings: &Self::Settings,
     ) -> OpenActionResult<()> {
-        self.send_apps_to_pi(instance).await
+        self.send_apps_to_pi(instance).await?;
+        self.apply_visuals(instance, settings).await
+    }
+
+    async fn did_receive_settings(
+        &self,
+        instance: &Instance,
+        settings: &Self::Settings,
+    ) -> OpenActionResult<()> {
+        self.apply_visuals(instance, settings).await
     }
 
     async fn key_up(&self, instance: &Instance, settings: &Self::Settings) -> OpenActionResult<()> {
@@ -243,6 +364,7 @@ mod tests {
             name: id.to_string(),
             window_class: class.to_string(),
             exec: format!("{id}-binary"),
+            path: std::path::PathBuf::from(format!("/usr/share/applications/{id}.desktop")),
         }
     }
 
@@ -252,17 +374,89 @@ mod tests {
             class_override: None,
             cycle_windows: cycle,
             minimize_when_focused: minimize,
+            name_override: None,
+            icon_override: None,
+            exec_override: None,
+            custom_args: None,
         }
     }
 
     #[test]
+    fn exec_override_wins_when_set() {
+        let mut settings = settings("org.mozilla.firefox", true, true);
+        settings.exec_override = Some("firefox --private-window".to_string());
+        let entry = app("org.mozilla.firefox", "firefox");
+
+        assert_eq!(resolve_exec(&settings, &entry), "firefox --private-window");
+    }
+
+    #[test]
+    fn exec_falls_back_to_the_apps_own_exec_when_no_override() {
+        let settings = settings("org.mozilla.firefox", true, true);
+        let entry = app("org.mozilla.firefox", "firefox");
+
+        assert_eq!(resolve_exec(&settings, &entry), entry.exec);
+    }
+
+    #[test]
+    fn name_override_wins_when_set() {
+        let mut settings = settings("org.mozilla.firefox", true, true);
+        settings.name_override = Some("Browser".to_string());
+        let entry = app("org.mozilla.firefox", "firefox");
+
+        assert_eq!(resolve_display_name(&settings, &entry), "Browser");
+    }
+
+    #[test]
+    fn name_falls_back_to_the_apps_own_name_when_no_override() {
+        let settings = settings("org.mozilla.firefox", true, true);
+        let entry = app("org.mozilla.firefox", "firefox");
+
+        assert_eq!(resolve_display_name(&settings, &entry), entry.name);
+    }
+
+    #[test]
+    fn icon_override_resolves_by_name_not_the_desktop_file() {
+        let mut settings = settings("org.mozilla.firefox", true, true);
+        settings.icon_override = Some("firefox-nightly".to_string());
+        let entry = app("org.mozilla.firefox", "firefox");
+
+        assert_eq!(
+            resolve_icon_source(&settings, &entry),
+            IconSource::Named("firefox-nightly".to_string())
+        );
+    }
+
+    #[test]
+    fn icon_falls_back_to_the_apps_own_desktop_file_when_no_override() {
+        let settings = settings("org.mozilla.firefox", true, true);
+        let entry = app("org.mozilla.firefox", "firefox");
+
+        assert_eq!(
+            resolve_icon_source(&settings, &entry),
+            IconSource::FromDesktopFile(entry.path.clone())
+        );
+    }
+
+    #[test]
+    fn empty_string_overrides_are_treated_as_unset() {
+        let mut settings = settings("org.mozilla.firefox", true, true);
+        settings.name_override = Some(String::new());
+        settings.icon_override = Some(String::new());
+        settings.exec_override = Some(String::new());
+        let entry = app("org.mozilla.firefox", "firefox");
+
+        assert_eq!(resolve_display_name(&settings, &entry), entry.name);
+        assert_eq!(resolve_exec(&settings, &entry), entry.exec);
+        assert_eq!(
+            resolve_icon_source(&settings, &entry),
+            IconSource::FromDesktopFile(entry.path.clone())
+        );
+    }
+
+    #[test]
     fn resolves_target_using_the_apps_own_window_class() {
-        let settings = FocusOrLaunchSettings {
-            app: Some("org.mozilla.firefox".to_string()),
-            class_override: None,
-            cycle_windows: true,
-            minimize_when_focused: true,
-        };
+        let settings = settings("org.mozilla.firefox", true, true);
         let apps = vec![app("org.mozilla.firefox", "firefox")];
         let (class, entry) = resolve_target(&settings, &apps).unwrap();
         assert_eq!(class, "firefox");
@@ -271,12 +465,8 @@ mod tests {
 
     #[test]
     fn class_override_wins_when_set() {
-        let settings = FocusOrLaunchSettings {
-            app: Some("org.mozilla.firefox".to_string()),
-            class_override: Some("Navigator".to_string()),
-            cycle_windows: true,
-            minimize_when_focused: true,
-        };
+        let mut settings = settings("org.mozilla.firefox", true, true);
+        settings.class_override = Some("Navigator".to_string());
         let apps = vec![app("org.mozilla.firefox", "firefox")];
         let (class, _) = resolve_target(&settings, &apps).unwrap();
         assert_eq!(class, "Navigator");
@@ -291,12 +481,7 @@ mod tests {
 
     #[test]
     fn no_target_when_selected_app_no_longer_installed() {
-        let settings = FocusOrLaunchSettings {
-            app: Some("uninstalled.app".to_string()),
-            class_override: None,
-            cycle_windows: true,
-            minimize_when_focused: true,
-        };
+        let settings = settings("uninstalled.app", true, true);
         let apps = vec![app("org.mozilla.firefox", "firefox")];
         assert!(resolve_target(&settings, &apps).is_none());
     }

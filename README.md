@@ -32,16 +32,26 @@ OpenDeck) or unzip it into `~/.config/opendeck/plugins/` and restart OpenDeck
 ## Using a key
 
 1. Add a **Focus or Launch** key in OpenDeck.
-2. Pick an app from the dropdown.
-3. If the app reports the wrong window class (rare), expand "Window class
-   override" and set it by hand.
-4. Leave "Cycle to next window" and "Minimize when already focused" checked
+2. Pick an app from the dropdown. Its `.desktop` file path is shown
+   underneath for reference.
+3. Leave "Cycle to next window" and "Minimize when already focused" checked
    for the default behavior described above. Unchecking "Cycle to next
    window" means a repeat press does nothing (instead of cycling) once the
    app has several windows open and one is already focused; unchecking
    "Minimize when already focused" means a repeat press does nothing
    (instead of minimizing) when the app has a single window and it's already
    focused.
+4. Expand **Advanced overrides** to fine-tune the selected app — each field
+   is auto-filled (shown as its placeholder hint where applicable) and only
+   takes effect once you actually type something in it:
+   - **Window class** — only needed if the app reports the wrong one.
+   - **Name** — sets the key's title; leave blank to use the app's own name.
+   - **Icon name** — an icon theme name to resolve instead of the app's own
+     icon.
+   - **Exec** — overrides the launch command.
+   - **Custom arguments** — extra arguments appended when launching.
+
+   Picking a different app resets every override on that key back to unset.
 
 ## Manual smoke-test checklist
 
@@ -61,6 +71,11 @@ Plasma has been verified so far — see the entries below):
       development)*
 - [ ] Plain X11 window manager, same checks above. *(not yet verified — no
       X11 session available during development)*
+- [ ] Selecting an app sets the key's title and icon to match it. *(KDE: verified / not yet verified)*
+- [ ] Setting Name/Icon/Exec/Custom arguments overrides changes the key's
+      title, icon, and launch behavior accordingly; clearing them reverts to
+      the app's own values. *(KDE: verified / not yet verified)*
+- [ ] Picking a different app resets those overrides. *(KDE: verified / not yet verified)*
 
 ## Development
 

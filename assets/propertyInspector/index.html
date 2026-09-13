@@ -10,11 +10,13 @@
 		.checkbox-row { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
 		.checkbox-row label { margin: 0; }
 		details { margin-top: 10px; }
+		#path { display: block; margin-top: 4px; font-size: 11px; opacity: 0.6; word-break: break-all; }
 	</style>
 </head>
 <body>
 	<label for="app">Application</label>
 	<select id="app"><option value="">Select an app&hellip;</option></select>
+	<span id="path"></span>
 
 	<div class="checkbox-row">
 		<input type="checkbox" id="cycle_windows" checked />
@@ -26,9 +28,21 @@
 	</div>
 
 	<details>
-		<summary>Window class override</summary>
-		<label for="class_override">Only needed if the app reports the wrong window class</label>
+		<summary>Advanced overrides</summary>
+		<label for="class_override">Window class (only needed if the app reports the wrong one)</label>
 		<input type="text" id="class_override" placeholder="(auto-detected)" />
+
+		<label for="name_override">Name (shown as the key's title)</label>
+		<input type="text" id="name_override" />
+
+		<label for="icon_override">Icon name (resolved through your icon theme)</label>
+		<input type="text" id="icon_override" placeholder="(auto, from the app)" />
+
+		<label for="exec_override">Exec (the launch command)</label>
+		<input type="text" id="exec_override" />
+
+		<label for="custom_args">Custom arguments (appended when launching)</label>
+		<input type="text" id="custom_args" placeholder="(none)" />
 	</details>
 
 	<script>
@@ -40,6 +54,7 @@
 		let websocket;
 		let uuid;
 		let actionInfo;
+		let apps = [];
 
 		window.connectOpenActionSocketData.then(([inPort, inUUID, inRegisterEvent, inInfo, inActionInfo]) => {
 			uuid = inUUID;
@@ -67,11 +82,17 @@
 			document.getElementById("cycle_windows").checked = settings.cycle_windows !== false;
 			document.getElementById("minimize_when_focused").checked = settings.minimize_when_focused !== false;
 			document.getElementById("class_override").value = settings.class_override || "";
+			document.getElementById("name_override").value = settings.name_override || "";
+			document.getElementById("icon_override").value = settings.icon_override || "";
+			document.getElementById("exec_override").value = settings.exec_override || "";
+			document.getElementById("custom_args").value = settings.custom_args || "";
 			const appSelect = document.getElementById("app");
 			if (settings.app) appSelect.value = settings.app;
+			updateDerivedDisplay();
 		}
 
-		function populateApps(apps) {
+		function populateApps(newApps) {
+			apps = newApps;
 			const select = document.getElementById("app");
 			const selected = select.dataset.selected || select.value;
 			select.innerHTML = '<option value="">Select an app&hellip;</option>';
@@ -82,6 +103,32 @@
 				select.appendChild(opt);
 			}
 			if (selected) select.value = selected;
+			updateDerivedDisplay();
+		}
+
+		// Shows the read-only Path line and the Name/Exec placeholder hints for
+		// whichever app is currently selected - purely informational, derived
+		// fresh from the apps list, never written into settings itself.
+		function updateDerivedDisplay() {
+			const selectedId = document.getElementById("app").value;
+			const app = apps.find((a) => a.id === selectedId);
+			document.getElementById("path").textContent = app ? app.path : "";
+			document.getElementById("name_override").placeholder = app ? app.name : "";
+			document.getElementById("exec_override").placeholder = app ? app.exec : "";
+		}
+
+		// Picking a different app resets every override back to "unset" (shown
+		// as its placeholder hint) rather than carrying edits from the
+		// previous app forward - overrides are fine-tuning for the currently
+		// selected app, not a way to build a synthetic one.
+		function onAppChanged() {
+			document.getElementById("class_override").value = "";
+			document.getElementById("name_override").value = "";
+			document.getElementById("icon_override").value = "";
+			document.getElementById("exec_override").value = "";
+			document.getElementById("custom_args").value = "";
+			updateDerivedDisplay();
+			sendSettings();
 		}
 
 		function sendSettings() {
@@ -90,6 +137,10 @@
 				class_override: document.getElementById("class_override").value || null,
 				cycle_windows: document.getElementById("cycle_windows").checked,
 				minimize_when_focused: document.getElementById("minimize_when_focused").checked,
+				name_override: document.getElementById("name_override").value || null,
+				icon_override: document.getElementById("icon_override").value || null,
+				exec_override: document.getElementById("exec_override").value || null,
+				custom_args: document.getElementById("custom_args").value || null,
 			};
 			websocket.send(JSON.stringify({
 				event: "setSettings",
@@ -98,7 +149,16 @@
 			}));
 		}
 
-		for (const id of ["app", "class_override", "cycle_windows", "minimize_when_focused"]) {
+		document.getElementById("app").addEventListener("change", onAppChanged);
+		for (const id of [
+			"class_override",
+			"cycle_windows",
+			"minimize_when_focused",
+			"name_override",
+			"icon_override",
+			"exec_override",
+			"custom_args",
+		]) {
 			document.getElementById(id).addEventListener("change", sendSettings);
 		}
 	</script>

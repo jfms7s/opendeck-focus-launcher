@@ -7,6 +7,11 @@ pub struct AppEntry {
     pub name: String,
     pub window_class: String,
     pub exec: String,
+    /// The `.desktop` file's own absolute path - shown read-only in the
+    /// property inspector (matching what the reference Launch App plugin
+    /// persists as its whole `settings.app`) and used to resolve the app's
+    /// own icon via `tux_icons::IconFetcher::get_icon_path_from_desktop`.
+    pub path: std::path::PathBuf,
 }
 
 /// Strips the standard Exec field placeholders (%f, %F, %u, %U, %d, %D, %n, %N,
@@ -70,6 +75,7 @@ fn list_installed_apps_from_paths<I: IntoIterator<Item = std::path::PathBuf>>(
                 .unwrap_or_else(|| entry.id().to_string()),
             window_class: resolve_window_class(entry.id(), entry.startup_wm_class()),
             exec: entry.exec().unwrap_or_default().to_string(),
+            path: entry.path.clone(),
         })
         .collect();
     apps.sort_by_key(|a| a.name.to_lowercase());
@@ -150,6 +156,7 @@ mod tests {
         assert_eq!(apps[0].name, "Test App");
         assert_eq!(apps[0].window_class, "testapp");
         assert_eq!(apps[0].exec, "test-app %u");
+        assert_eq!(apps[0].path, apps_dir.join("test-app.desktop"));
     }
 
     #[test]

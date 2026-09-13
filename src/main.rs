@@ -2,6 +2,7 @@ mod action;
 mod apps;
 mod backend;
 mod decision;
+mod icon;
 
 use action::FocusOrLaunchAction;
 use openaction::{OpenActionResult, register_action, run};
