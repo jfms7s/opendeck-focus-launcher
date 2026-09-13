@@ -51,3 +51,4 @@ mod tests {
 
 pub mod kdotool;
 pub mod gnome;
+pub mod x11;
