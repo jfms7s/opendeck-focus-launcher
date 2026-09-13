@@ -50,3 +50,4 @@ mod tests {
 }
 
 pub mod kdotool;
+pub mod gnome;
