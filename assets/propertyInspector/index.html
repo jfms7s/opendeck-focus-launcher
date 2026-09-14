@@ -9,8 +9,9 @@
 		select, input[type="text"] { width: 100%; box-sizing: border-box; margin-top: 2px; }
 		.checkbox-row { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
 		.checkbox-row label { margin: 0; }
-		details { margin-top: 10px; }
 		#path { display: block; margin-top: 4px; font-size: 11px; opacity: 0.6; word-break: break-all; }
+		.overrides { margin-top: 10px; }
+		.overrides-title { font-size: 11px; opacity: 0.8; margin-bottom: 4px; }
 	</style>
 </head>
 <body>
@@ -27,8 +28,9 @@
 		<label for="minimize_when_focused">Minimize when already focused</label>
 	</div>
 
-	<details>
-		<summary>Advanced overrides</summary>
+	<div class="overrides">
+		<div class="overrides-title">Advanced overrides</div>
+
 		<label for="class_override">Window class (only needed if the app reports the wrong one)</label>
 		<input type="text" id="class_override" placeholder="(auto-detected)" />
 
@@ -40,10 +42,10 @@
 
 		<label for="exec_override">Exec (the launch command)</label>
 		<input type="text" id="exec_override" />
+	</div>
 
-		<label for="custom_args">Custom arguments (appended when launching)</label>
-		<input type="text" id="custom_args" placeholder="(none)" />
-	</details>
+	<label for="custom_args">Custom arguments (appended when launching)</label>
+	<input type="text" id="custom_args" placeholder="(none)" />
 
 	<script>
 		window.connectOpenActionSocketData = new Promise((resolve) => {
