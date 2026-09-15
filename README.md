@@ -41,7 +41,10 @@ OpenDeck) or unzip it into `~/.config/opendeck/plugins/` and restart OpenDeck
    "Minimize when already focused" means a repeat press does nothing
    (instead of minimizing) when the app has a single window and it's already
    focused.
-4. Expand **Advanced overrides** to fine-tune the selected app — each field
+4. Check "Press and hold to close all windows" to make holding the key down
+   (instead of a normal tap) close every open window for that app, rather
+   than focusing/launching/cycling/minimizing. Off by default.
+5. Expand **Advanced overrides** to fine-tune the selected app — each field
    is auto-filled (shown as its placeholder hint where applicable) and only
    takes effect once you actually type something in it:
    - **Window class** — only needed if the app reports the wrong one.
@@ -66,6 +69,12 @@ Plasma has been verified so far — see the entries below):
 - [ ] Cycling off, app focused, several windows → key press does nothing. *(KDE: verified / not yet verified)*
 - [ ] Minimize-when-focused off, app focused, one window → key press does
       nothing. *(KDE: verified / not yet verified)*
+- [ ] Close-all-on-hold on, app has several windows open → pressing and
+      holding the key (past ~500ms) then releasing closes all of them; a
+      normal tap still focuses/cycles/minimizes as usual. *(KDE: verified /
+      not yet verified)*
+- [ ] Close-all-on-hold off → holding the key does the same thing a normal
+      tap would. *(KDE: verified / not yet verified)*
 - [ ] GNOME Shell, same checks above, with the Window Calls extension
       installed. *(not yet verified — no GNOME session available during
       development)*

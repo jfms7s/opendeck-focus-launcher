@@ -103,6 +103,11 @@ impl WindowBackend for KdotoolBackend {
         check_status(&output, "kdotool windowminimize")
     }
 
+    async fn close(&self, id: &WindowId) -> Result<(), BackendError> {
+        let output = run_kdotool(&["windowclose", id]).await?;
+        check_status(&output, "kdotool windowclose")
+    }
+
     async fn active_window(&self) -> Result<Option<WindowId>, BackendError> {
         let output = run_kdotool(&["getactivewindow"]).await?;
         Ok(parse_single_id(&String::from_utf8_lossy(&output.stdout)))

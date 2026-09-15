@@ -16,6 +16,7 @@ pub trait WindowBackend: Send + Sync {
     async fn list_windows(&self, class: &str) -> Result<Vec<WindowId>, BackendError>;
     async fn activate(&self, id: &WindowId) -> Result<(), BackendError>;
     async fn minimize(&self, id: &WindowId) -> Result<(), BackendError>;
+    async fn close(&self, id: &WindowId) -> Result<(), BackendError>;
     async fn active_window(&self) -> Result<Option<WindowId>, BackendError>;
 }
 
@@ -34,6 +35,9 @@ mod tests {
             unreachable!()
         }
         async fn minimize(&self, _id: &WindowId) -> Result<(), BackendError> {
+            unreachable!()
+        }
+        async fn close(&self, _id: &WindowId) -> Result<(), BackendError> {
             unreachable!()
         }
         async fn active_window(&self) -> Result<Option<WindowId>, BackendError> {

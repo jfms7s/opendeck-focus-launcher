@@ -80,6 +80,11 @@ impl WindowBackend for X11Backend {
         check_status(&output, "xdotool windowminimize")
     }
 
+    async fn close(&self, id: &WindowId) -> Result<(), BackendError> {
+        let output = run("wmctrl", &["-i", "-c", id]).await?;
+        check_status(&output, "wmctrl -i -c")
+    }
+
     async fn active_window(&self) -> Result<Option<WindowId>, BackendError> {
         let output = run("xdotool", &["getactivewindow"]).await?;
         let raw = String::from_utf8_lossy(&output.stdout);

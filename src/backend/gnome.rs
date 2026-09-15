@@ -95,6 +95,14 @@ impl WindowBackend for GnomeWindowCallsBackend {
         Ok(())
     }
 
+    async fn close(&self, id: &WindowId) -> Result<(), BackendError> {
+        let id: u32 = id
+            .parse()
+            .map_err(|_| BackendError::CommandFailed(format!("not a Window Calls id: {id}")))?;
+        call_gnome_shell("Close", id).await?;
+        Ok(())
+    }
+
     async fn active_window(&self) -> Result<Option<WindowId>, BackendError> {
         let json = list_json().await?;
         let all: Vec<GnomeWindow> = serde_json::from_str(&json)

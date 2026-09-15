@@ -28,6 +28,11 @@ pub struct FocusOrLaunchSettings {
     /// Extra arguments appended when launching - passed straight through as
     /// `apps::launch_app`'s `args` parameter.
     pub custom_args: Option<String>,
+    /// When set, holding the key down (past `HOLD_THRESHOLD`) and releasing
+    /// it closes every window matching the target app instead of running the
+    /// usual focus/launch/cycle/minimize logic.
+    #[serde(default)]
+    pub close_all_windows_on_hold: bool,
 }
 
 fn default_true() -> bool {
@@ -51,6 +56,7 @@ impl Default for FocusOrLaunchSettings {
             icon_override: None,
             exec_override: None,
             custom_args: None,
+            close_all_windows_on_hold: false,
         }
     }
 }
@@ -122,6 +128,17 @@ fn id_fallback_class<'a>(class: &str, entry: &'a AppEntry) -> Option<&'a str> {
     }
 }
 
+/// How long a key must be held down before release counts as a hold rather
+/// than a regular press. The OpenAction/Stream Deck protocol has no native
+/// "long press" event - only separate `key_down`/`key_up` calls - so this is
+/// timed by the plugin itself between the two.
+const HOLD_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Whether a key_down-to-key_up gap counts as a hold.
+fn is_hold(elapsed: std::time::Duration, threshold: std::time::Duration) -> bool {
+    elapsed >= threshold
+}
+
 /// The outcome of one orchestration pass (list windows -> decide -> dispatch),
 /// kept separate from any `Instance`/logging side effects so it can be tested
 /// against a fake `WindowBackend` without a live OpenDeck connection.
@@ -137,6 +154,40 @@ enum RunOutcome {
     Minimized(WindowId),
     MinimizeFailed(WindowId, String),
     NoOp,
+    ClosedAll(Vec<WindowId>),
+    CloseFailed(Vec<(WindowId, String)>),
+}
+
+/// Resolves the target app/class from settings and lists its windows,
+/// retrying with the entry id fallback (see `id_fallback_class`) when the
+/// primary class search comes up empty. Shared by `orchestrate` and
+/// `orchestrate_close_all` - listing the target's windows is identical
+/// between "focus or launch" and "close all"; only what happens with the
+/// resulting list differs.
+async fn resolve_target_windows(
+    backend: &dyn WindowBackend,
+    settings: &FocusOrLaunchSettings,
+    apps: &[AppEntry],
+) -> Result<(AppEntry, Vec<WindowId>), RunOutcome> {
+    let Some((class, entry)) = resolve_target(settings, apps) else {
+        return Err(RunOutcome::NoAppSelected);
+    };
+
+    let mut windows = match backend.list_windows(&class).await {
+        Ok(w) => w,
+        Err(BackendError::Unavailable(msg)) => return Err(RunOutcome::BackendUnavailable(msg)),
+        Err(BackendError::CommandFailed(msg)) => return Err(RunOutcome::ListWindowsFailed(msg)),
+    };
+
+    if windows.is_empty()
+        && let Some(fallback_class) = id_fallback_class(&class, &entry)
+        && let Ok(fallback_windows) = backend.list_windows(fallback_class).await
+        && !fallback_windows.is_empty()
+    {
+        windows = fallback_windows;
+    }
+
+    Ok((entry, windows))
 }
 
 /// Runs one full orchestration pass against the given backend: resolve the
@@ -149,23 +200,10 @@ async fn orchestrate(
     settings: &FocusOrLaunchSettings,
     apps: &[AppEntry],
 ) -> RunOutcome {
-    let Some((class, entry)) = resolve_target(settings, apps) else {
-        return RunOutcome::NoAppSelected;
+    let (entry, windows) = match resolve_target_windows(backend, settings, apps).await {
+        Ok(v) => v,
+        Err(outcome) => return outcome,
     };
-
-    let mut windows = match backend.list_windows(&class).await {
-        Ok(w) => w,
-        Err(BackendError::Unavailable(msg)) => return RunOutcome::BackendUnavailable(msg),
-        Err(BackendError::CommandFailed(msg)) => return RunOutcome::ListWindowsFailed(msg),
-    };
-
-    if windows.is_empty()
-        && let Some(fallback_class) = id_fallback_class(&class, &entry)
-        && let Ok(fallback_windows) = backend.list_windows(fallback_class).await
-        && !fallback_windows.is_empty()
-    {
-        windows = fallback_windows;
-    }
 
     let active = if windows.is_empty() {
         None
@@ -198,12 +236,49 @@ async fn orchestrate(
     }
 }
 
+/// Runs a "close all windows" pass for the target app/class from settings,
+/// triggered by holding a key down instead of tapping it (see `is_hold`).
+/// Closes every matching window rather than picking one to focus/minimize;
+/// a failure on one window doesn't stop the rest from being attempted.
+async fn orchestrate_close_all(
+    backend: &dyn WindowBackend,
+    settings: &FocusOrLaunchSettings,
+    apps: &[AppEntry],
+) -> RunOutcome {
+    let (_entry, windows) = match resolve_target_windows(backend, settings, apps).await {
+        Ok(v) => v,
+        Err(outcome) => return outcome,
+    };
+
+    if windows.is_empty() {
+        return RunOutcome::NoOp;
+    }
+
+    let mut failures = Vec::new();
+    for id in &windows {
+        if let Err(e) = backend.close(id).await {
+            failures.push((id.clone(), e.to_string()));
+        }
+    }
+
+    if failures.is_empty() {
+        RunOutcome::ClosedAll(windows)
+    } else {
+        RunOutcome::CloseFailed(failures)
+    }
+}
+
 pub struct FocusOrLaunchAction {
     /// `None` when no supported window backend could be determined for this
     /// desktop session (see `select_backend`) - every call site must check
     /// for that and degrade gracefully (log + `show_alert`) rather than
     /// assume a backend is always present.
     backend: Option<Box<dyn WindowBackend>>,
+    /// When each instance's key was last pressed down, so `key_up` can tell
+    /// a hold from a regular press (see `is_hold`). Keyed by instance id
+    /// rather than held per-`Instance` since the same `FocusOrLaunchAction`
+    /// handles every key bound to this action.
+    key_down_at: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
 }
 
 impl FocusOrLaunchAction {
@@ -219,7 +294,10 @@ impl FocusOrLaunchAction {
                  Focus or Launch keys will do nothing until this is resolved"
             );
         }
-        Self { backend }
+        Self {
+            backend,
+            key_down_at: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
     }
 
     /// Sends the installed-apps list to the property inspector. Shared by
@@ -291,19 +369,32 @@ impl FocusOrLaunchAction {
         Ok(())
     }
 
-    async fn run_for_settings(
+    /// Returns the window backend for this desktop session, or logs +
+    /// `show_alert`s and returns `None` if there isn't one - shared by every
+    /// call site that needs a backend before it can do anything.
+    async fn require_backend(&self, instance: &Instance) -> Option<&dyn WindowBackend> {
+        match self.backend.as_deref() {
+            Some(backend) => Some(backend),
+            None => {
+                log::error!(
+                    "no supported window backend for this desktop session; taking no action"
+                );
+                let _ = instance.show_alert().await;
+                None
+            }
+        }
+    }
+
+    /// Logs and surfaces (via `show_alert`) the result of an orchestration
+    /// pass. Shared by `run_for_settings` and `run_close_all_for_settings` -
+    /// only what's dispatched differs between them, not how the outcome is
+    /// reported.
+    async fn report_outcome(
         &self,
         instance: &Instance,
-        settings: &FocusOrLaunchSettings,
+        outcome: RunOutcome,
     ) -> OpenActionResult<()> {
-        let Some(backend) = self.backend.as_deref() else {
-            log::error!("no supported window backend for this desktop session; taking no action");
-            let _ = instance.show_alert().await;
-            return Ok(());
-        };
-
-        let apps = list_installed_apps();
-        match orchestrate(backend, settings, &apps).await {
+        match outcome {
             RunOutcome::NoAppSelected => {
                 log::warn!("no app selected for this key");
             }
@@ -330,8 +421,46 @@ impl FocusOrLaunchAction {
                 let _ = instance.show_alert().await;
             }
             RunOutcome::NoOp => {}
+            RunOutcome::ClosedAll(ids) => {
+                log::info!("closed {} window(s)", ids.len());
+            }
+            RunOutcome::CloseFailed(failures) => {
+                for (id, msg) in &failures {
+                    log::error!("failed to close window {id}: {msg}");
+                }
+                let _ = instance.show_alert().await;
+            }
         }
         Ok(())
+    }
+
+    async fn run_for_settings(
+        &self,
+        instance: &Instance,
+        settings: &FocusOrLaunchSettings,
+    ) -> OpenActionResult<()> {
+        let Some(backend) = self.require_backend(instance).await else {
+            return Ok(());
+        };
+        let apps = list_installed_apps();
+        let outcome = orchestrate(backend, settings, &apps).await;
+        self.report_outcome(instance, outcome).await
+    }
+
+    /// Same as `run_for_settings`, but closes every window matching the
+    /// target app instead of focusing/launching/minimizing - triggered by
+    /// holding the key down (see `is_hold`) instead of tapping it.
+    async fn run_close_all_for_settings(
+        &self,
+        instance: &Instance,
+        settings: &FocusOrLaunchSettings,
+    ) -> OpenActionResult<()> {
+        let Some(backend) = self.require_backend(instance).await else {
+            return Ok(());
+        };
+        let apps = list_installed_apps();
+        let outcome = orchestrate_close_all(backend, settings, &apps).await;
+        self.report_outcome(instance, outcome).await
     }
 }
 
@@ -366,8 +495,31 @@ impl Action for FocusOrLaunchAction {
         self.apply_visuals(instance, settings).await
     }
 
+    async fn key_down(
+        &self,
+        instance: &Instance,
+        _settings: &Self::Settings,
+    ) -> OpenActionResult<()> {
+        self.key_down_at
+            .lock()
+            .unwrap()
+            .insert(instance.instance_id.clone(), std::time::Instant::now());
+        Ok(())
+    }
+
     async fn key_up(&self, instance: &Instance, settings: &Self::Settings) -> OpenActionResult<()> {
-        self.run_for_settings(instance, settings).await
+        let pressed_at = self
+            .key_down_at
+            .lock()
+            .unwrap()
+            .remove(&instance.instance_id);
+        let held = pressed_at.is_some_and(|at| is_hold(at.elapsed(), HOLD_THRESHOLD));
+
+        if held && settings.close_all_windows_on_hold {
+            self.run_close_all_for_settings(instance, settings).await
+        } else {
+            self.run_for_settings(instance, settings).await
+        }
     }
 
     async fn dial_up(
@@ -404,6 +556,7 @@ mod tests {
             icon_override: None,
             exec_override: None,
             custom_args: None,
+            close_all_windows_on_hold: false,
         }
     }
 
@@ -499,6 +652,30 @@ mod tests {
     }
 
     #[test]
+    fn is_hold_true_when_elapsed_meets_threshold() {
+        assert!(is_hold(
+            std::time::Duration::from_millis(500),
+            std::time::Duration::from_millis(500)
+        ));
+    }
+
+    #[test]
+    fn is_hold_true_when_elapsed_exceeds_threshold() {
+        assert!(is_hold(
+            std::time::Duration::from_millis(800),
+            std::time::Duration::from_millis(500)
+        ));
+    }
+
+    #[test]
+    fn is_hold_false_when_elapsed_is_below_threshold() {
+        assert!(!is_hold(
+            std::time::Duration::from_millis(200),
+            std::time::Duration::from_millis(500)
+        ));
+    }
+
+    #[test]
     fn no_target_when_no_app_selected() {
         let settings = FocusOrLaunchSettings::default();
         let apps = vec![app("org.mozilla.firefox", "firefox")];
@@ -544,6 +721,10 @@ mod tests {
         list_windows_err: Option<BackendError>,
         activate_calls: Mutex<Vec<WindowId>>,
         minimize_calls: Mutex<Vec<WindowId>>,
+        close_calls: Mutex<Vec<WindowId>>,
+        /// Window ids that `close` should fail for, e.g. to simulate one
+        /// window in a close-all batch refusing to close.
+        close_fails_for: Vec<WindowId>,
     }
 
     #[async_trait]
@@ -568,6 +749,14 @@ mod tests {
 
         async fn minimize(&self, id: &WindowId) -> Result<(), BackendError> {
             self.minimize_calls.lock().unwrap().push(id.clone());
+            Ok(())
+        }
+
+        async fn close(&self, id: &WindowId) -> Result<(), BackendError> {
+            self.close_calls.lock().unwrap().push(id.clone());
+            if self.close_fails_for.contains(id) {
+                return Err(BackendError::CommandFailed(format!("could not close {id}")));
+            }
             Ok(())
         }
 
@@ -750,5 +939,109 @@ mod tests {
         let outcome = orchestrate(&backend, &settings, &apps).await;
 
         assert_eq!(outcome, RunOutcome::NoAppSelected);
+    }
+
+    #[tokio::test]
+    async fn orchestrate_close_all_closes_every_matching_window() {
+        let backend = RecordingFakeBackend {
+            windows: vec!["w1".to_string(), "w2".to_string()],
+            ..Default::default()
+        };
+        let apps = vec![app("org.mozilla.firefox", "firefox")];
+        let settings = settings("org.mozilla.firefox", true, true);
+
+        let outcome = orchestrate_close_all(&backend, &settings, &apps).await;
+
+        assert_eq!(
+            outcome,
+            RunOutcome::ClosedAll(vec!["w1".to_string(), "w2".to_string()])
+        );
+        assert_eq!(
+            *backend.close_calls.lock().unwrap(),
+            vec!["w1".to_string(), "w2".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn orchestrate_close_all_is_a_no_op_when_nothing_is_open() {
+        let backend = RecordingFakeBackend::default();
+        let apps = vec![app("org.mozilla.firefox", "firefox")];
+        let settings = settings("org.mozilla.firefox", true, true);
+
+        let outcome = orchestrate_close_all(&backend, &settings, &apps).await;
+
+        assert_eq!(outcome, RunOutcome::NoOp);
+        assert!(backend.close_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn orchestrate_close_all_reports_no_app_selected() {
+        let backend = RecordingFakeBackend::default();
+        let apps = vec![app("org.mozilla.firefox", "firefox")];
+        let settings = FocusOrLaunchSettings::default();
+
+        let outcome = orchestrate_close_all(&backend, &settings, &apps).await;
+
+        assert_eq!(outcome, RunOutcome::NoAppSelected);
+    }
+
+    #[tokio::test]
+    async fn orchestrate_close_all_reports_windows_that_failed_to_close() {
+        let backend = RecordingFakeBackend {
+            windows: vec!["w1".to_string(), "w2".to_string()],
+            close_fails_for: vec!["w2".to_string()],
+            ..Default::default()
+        };
+        let apps = vec![app("org.mozilla.firefox", "firefox")];
+        let settings = settings("org.mozilla.firefox", true, true);
+
+        let outcome = orchestrate_close_all(&backend, &settings, &apps).await;
+
+        assert_eq!(
+            outcome,
+            RunOutcome::CloseFailed(vec![(
+                "w2".to_string(),
+                "backend command failed: could not close w2".to_string()
+            )])
+        );
+        // Both windows are still attempted, even after one failure.
+        assert_eq!(
+            *backend.close_calls.lock().unwrap(),
+            vec!["w1".to_string(), "w2".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn orchestrate_close_all_reports_backend_unavailable() {
+        let backend = RecordingFakeBackend {
+            list_windows_err: Some(BackendError::Unavailable("no wmctrl".to_string())),
+            ..Default::default()
+        };
+        let apps = vec![app("org.mozilla.firefox", "firefox")];
+        let settings = settings("org.mozilla.firefox", true, true);
+
+        let outcome = orchestrate_close_all(&backend, &settings, &apps).await;
+
+        assert_eq!(
+            outcome,
+            RunOutcome::BackendUnavailable("no wmctrl".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn orchestrate_close_all_falls_back_to_entry_id_when_startup_wm_class_matches_nothing() {
+        let mut windows_by_class = std::collections::HashMap::new();
+        windows_by_class.insert("crx_abc".to_string(), vec![]);
+        windows_by_class.insert("chrome-abc-Default".to_string(), vec!["w1".to_string()]);
+        let backend = RecordingFakeBackend {
+            windows_by_class: Some(windows_by_class),
+            ..Default::default()
+        };
+        let apps = vec![app("chrome-abc-Default", "crx_abc")];
+        let settings = settings("chrome-abc-Default", true, true);
+
+        let outcome = orchestrate_close_all(&backend, &settings, &apps).await;
+
+        assert_eq!(outcome, RunOutcome::ClosedAll(vec!["w1".to_string()]));
     }
 }

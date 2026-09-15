@@ -27,6 +27,10 @@
 		<input type="checkbox" id="minimize_when_focused" checked />
 		<label for="minimize_when_focused">Minimize when already focused</label>
 	</div>
+	<div class="checkbox-row">
+		<input type="checkbox" id="close_all_windows_on_hold" />
+		<label for="close_all_windows_on_hold">Press and hold to close all windows</label>
+	</div>
 
 	<div class="overrides">
 		<div class="overrides-title">Advanced overrides</div>
@@ -83,6 +87,7 @@
 			document.getElementById("app").dataset.selected = settings.app || "";
 			document.getElementById("cycle_windows").checked = settings.cycle_windows !== false;
 			document.getElementById("minimize_when_focused").checked = settings.minimize_when_focused !== false;
+			document.getElementById("close_all_windows_on_hold").checked = settings.close_all_windows_on_hold === true;
 			document.getElementById("class_override").value = settings.class_override || "";
 			document.getElementById("name_override").value = settings.name_override || "";
 			document.getElementById("icon_override").value = settings.icon_override || "";
@@ -139,6 +144,7 @@
 				class_override: document.getElementById("class_override").value || null,
 				cycle_windows: document.getElementById("cycle_windows").checked,
 				minimize_when_focused: document.getElementById("minimize_when_focused").checked,
+				close_all_windows_on_hold: document.getElementById("close_all_windows_on_hold").checked,
 				name_override: document.getElementById("name_override").value || null,
 				icon_override: document.getElementById("icon_override").value || null,
 				exec_override: document.getElementById("exec_override").value || null,
@@ -156,6 +162,7 @@
 			"class_override",
 			"cycle_windows",
 			"minimize_when_focused",
+			"close_all_windows_on_hold",
 			"name_override",
 			"icon_override",
 			"exec_override",
