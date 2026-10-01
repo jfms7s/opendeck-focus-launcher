@@ -23,8 +23,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - run: node build.mjs x86_64-unknown-linux-gnu
       - name: Assemble a universal bundle (both architectures, one manifest)
-        run: node build.mjs x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+        run: |
+          cp target/aarch64-unknown-linux-gnu/release/opendeck-focus-launcher \
+             dist/com.jfms7s.focuslauncher.sdPlugin/opendeck-focus-launcher-aarch64-unknown-linux-gnu
       - name: Zip the plugin bundle
         run: |
           cd dist
