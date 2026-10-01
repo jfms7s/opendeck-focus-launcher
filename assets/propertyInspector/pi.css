@@ -10,7 +10,9 @@
  *
  * Markup:
  *   <main class="pi">                     grid of cards and loose fields
- *     <section class="card">              a titled group of fields
+ *     <section class="card">              a titled group of fields (not a
+ *                                         <fieldset>: its <legend> would
+ *                                         cut through the card border)
  *       <h2>Title</h2>
  *       <div class="field">               label + control (+ .hint)
  *         <label for="x">Label</label>
@@ -80,8 +82,7 @@ body {
 	grid-column: 1 / -1;
 }
 
-.card h2,
-.card legend {
+.card h2 {
 	margin: 0;
 	padding: 0;
 	font-size: 11px;
@@ -89,10 +90,6 @@ body {
 	letter-spacing: 0.06em;
 	text-transform: uppercase;
 	color: var(--pi-muted);
-}
-
-fieldset.card {
-	margin: 0;
 }
 
 .field {
