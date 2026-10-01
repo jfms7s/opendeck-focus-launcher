@@ -3,53 +3,59 @@
 <head>
 	<meta charset="utf-8" />
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
-	<style>
-		body { font: 12px system-ui, sans-serif; margin: 0; padding: 8px 12px; }
-		label { display: block; margin-top: 10px; font-size: 11px; opacity: 0.8; }
-		select, input[type="text"] { width: 100%; box-sizing: border-box; margin-top: 2px; }
-		.checkbox-row { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
-		.checkbox-row label { margin: 0; }
-		#path { display: block; margin-top: 4px; font-size: 11px; opacity: 0.6; word-break: break-all; }
-		.overrides { margin-top: 10px; }
-		.overrides-title { font-size: 11px; opacity: 0.8; margin-bottom: 4px; }
-	</style>
+	<link rel="stylesheet" href="pi.css" />
 </head>
 <body>
-	<label for="app">Application</label>
-	<select id="app"><option value="">Select an app&hellip;</option></select>
-	<span id="path"></span>
+	<main class="pi">
+		<section class="card">
+			<h2>App</h2>
+			<div class="field">
+				<label for="app">Application</label>
+				<select id="app"><option value="">Select an app&hellip;</option></select>
+				<p id="path" class="hint mono"></p>
+			</div>
+		</section>
 
-	<div class="checkbox-row">
-		<input type="checkbox" id="cycle_windows" checked />
-		<label for="cycle_windows">Cycle to next window if several are open</label>
-	</div>
-	<div class="checkbox-row">
-		<input type="checkbox" id="minimize_when_focused" checked />
-		<label for="minimize_when_focused">Minimize when already focused</label>
-	</div>
-	<div class="checkbox-row">
-		<input type="checkbox" id="close_all_windows_on_hold" />
-		<label for="close_all_windows_on_hold">Press and hold to close all windows</label>
-	</div>
+		<section class="card">
+			<h2>Behaviour</h2>
+			<label class="check"><input type="checkbox" id="cycle_windows" checked /> Cycle to the next window if several are open</label>
+			<label class="check"><input type="checkbox" id="minimize_when_focused" checked /> Minimize when already focused</label>
+			<label class="check"><input type="checkbox" id="close_all_windows_on_hold" /> Press and hold to close all windows</label>
+			<div class="field">
+				<label for="custom_args">Custom arguments</label>
+				<input type="text" id="custom_args" placeholder="(none)" />
+				<p class="hint">Appended to the command when launching.</p>
+			</div>
+		</section>
 
-	<div class="overrides">
-		<div class="overrides-title">Advanced overrides</div>
+		<section class="card">
+			<h2>Advanced overrides</h2>
+			<div class="field">
+				<label for="class_override">Window class</label>
+				<input type="text" id="class_override" placeholder="(auto-detected)" />
+				<p class="hint">Only needed if the app reports the wrong one.</p>
+			</div>
+			<div class="field">
+				<label for="name_override">Name</label>
+				<input type="text" id="name_override" />
+				<p class="hint">Shown as the key's title.</p>
+			</div>
+		</section>
 
-		<label for="class_override">Window class (only needed if the app reports the wrong one)</label>
-		<input type="text" id="class_override" placeholder="(auto-detected)" />
-
-		<label for="name_override">Name (shown as the key's title)</label>
-		<input type="text" id="name_override" />
-
-		<label for="icon_override">Icon name (resolved through your icon theme)</label>
-		<input type="text" id="icon_override" placeholder="(auto, from the app)" />
-
-		<label for="exec_override">Exec (the launch command)</label>
-		<input type="text" id="exec_override" />
-	</div>
-
-	<label for="custom_args">Custom arguments (appended when launching)</label>
-	<input type="text" id="custom_args" placeholder="(none)" />
+		<section class="card">
+			<h2>Launch overrides</h2>
+			<div class="field">
+				<label for="icon_override">Icon name</label>
+				<input type="text" id="icon_override" placeholder="(auto, from the app)" />
+				<p class="hint">Resolved through your icon theme.</p>
+			</div>
+			<div class="field">
+				<label for="exec_override">Exec</label>
+				<input type="text" id="exec_override" />
+				<p class="hint">The launch command.</p>
+			</div>
+		</section>
+	</main>
 
 	<script>
 		window.connectOpenActionSocketData = new Promise((resolve) => {
