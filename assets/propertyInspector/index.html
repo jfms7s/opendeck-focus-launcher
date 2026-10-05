@@ -21,43 +21,60 @@
 			<label class="check"><input type="checkbox" id="cycle_windows" checked /> Cycle to the next window if several are open</label>
 			<label class="check"><input type="checkbox" id="minimize_when_focused" checked /> Minimize when already focused</label>
 			<label class="check"><input type="checkbox" id="close_all_windows_on_hold" /> Press and hold to close all windows</label>
-			<div class="field">
-				<label for="custom_args">Custom arguments</label>
-				<input type="text" id="custom_args" placeholder="(none)" />
-				<p class="hint">Appended to the command when launching.</p>
-			</div>
 		</section>
 
 		<section class="card">
-			<h2>Advanced overrides</h2>
-			<div class="field">
-				<label for="class_override">Window class</label>
-				<input type="text" id="class_override" placeholder="(auto-detected)" />
-				<p class="hint">Only needed if the app reports the wrong one.</p>
-			</div>
+			<h2>Appearance &amp; matching</h2>
 			<div class="field">
 				<label for="name_override">Name</label>
 				<input type="text" id="name_override" />
 				<p class="hint">Shown as the key's title.</p>
 			</div>
-		</section>
-
-		<section class="card">
-			<h2>Launch overrides</h2>
 			<div class="field">
 				<label for="icon_override">Icon name</label>
 				<input type="text" id="icon_override" placeholder="(auto, from the app)" />
-				<p class="hint">Resolved through your icon theme.</p>
+				<p class="hint">An icon theme name, or an absolute path to an image.</p>
 			</div>
 			<div class="field">
-				<label for="exec_override">Exec</label>
+				<label for="class_override">Window class</label>
+				<input type="text" id="class_override" placeholder="(auto-detected)" />
+				<p class="hint">Matched exactly (ignoring case). Only needed if the app reports a different one.</p>
+			</div>
+		</section>
+
+		<section class="card">
+			<h2>Launch</h2>
+			<div class="field">
+				<label for="exec_override">Command</label>
 				<input type="text" id="exec_override" />
-				<p class="hint">The launch command.</p>
+				<p class="hint">Replaces the app's own command. Run directly, not through a shell: quotes group words, nothing else is special.</p>
+			</div>
+			<div class="field">
+				<label for="custom_args">Extra arguments</label>
+				<input type="text" id="custom_args" placeholder="(none)" />
+				<p class="hint">Appended to the command, split the same way.</p>
 			</div>
 		</section>
 	</main>
 
 	<script>
+		// The settings contract with the plugin. Each key is a field of
+		// FocusOrLaunchSettings (src/settings.rs); a Rust test checks this
+		// table against that struct. `def` is the value used when a stored
+		// setting is missing; `reset` fields are cleared when another app is
+		// picked (overrides are fine-tuning for one app).
+		const FIELDS = [
+			{ key: "app", kind: "select", def: null },
+			{ key: "cycle_windows", kind: "bool", def: true },
+			{ key: "minimize_when_focused", kind: "bool", def: true },
+			{ key: "close_all_windows_on_hold", kind: "bool", def: false },
+			{ key: "name_override", kind: "text", def: null, reset: true },
+			{ key: "icon_override", kind: "text", def: null, reset: true },
+			{ key: "class_override", kind: "text", def: null, reset: true },
+			{ key: "exec_override", kind: "text", def: null, reset: true },
+			{ key: "custom_args", kind: "text", def: null, reset: true },
+		];
+
 		window.connectOpenActionSocketData = new Promise((resolve) => {
 			window.connectOpenActionSocket = (...args) => resolve(args);
 			window.connectElgatoStreamDeckSocket = window.connectOpenActionSocket;
@@ -65,18 +82,23 @@
 
 		let websocket;
 		let uuid;
-		let actionInfo;
 		let apps = [];
+		// The saved app id, kept separately from the <select> so it survives
+		// until the apps list arrives, and even if the app is no longer
+		// installed. Without this the dropdown silently fell back to "", and
+		// the next edit of any other field saved `app: null`.
+		let savedApp = null;
+
+		const el = (id) => document.getElementById(id);
 
 		window.connectOpenActionSocketData.then(([inPort, inUUID, inRegisterEvent, inInfo, inActionInfo]) => {
 			uuid = inUUID;
-			actionInfo = JSON.parse(inActionInfo);
+			const actionInfo = JSON.parse(inActionInfo);
 			websocket = new WebSocket(`ws://127.0.0.1:${inPort}`);
 
 			websocket.onopen = () => {
 				websocket.send(JSON.stringify({ event: inRegisterEvent, uuid: inUUID }));
-				const settings = actionInfo.payload.settings || {};
-				applySettings(settings);
+				applySettings(actionInfo.payload.settings || {});
 			};
 
 			websocket.onmessage = (event) => {
@@ -90,91 +112,78 @@
 		});
 
 		function applySettings(settings) {
-			document.getElementById("app").dataset.selected = settings.app || "";
-			document.getElementById("cycle_windows").checked = settings.cycle_windows !== false;
-			document.getElementById("minimize_when_focused").checked = settings.minimize_when_focused !== false;
-			document.getElementById("close_all_windows_on_hold").checked = settings.close_all_windows_on_hold === true;
-			document.getElementById("class_override").value = settings.class_override || "";
-			document.getElementById("name_override").value = settings.name_override || "";
-			document.getElementById("icon_override").value = settings.icon_override || "";
-			document.getElementById("exec_override").value = settings.exec_override || "";
-			document.getElementById("custom_args").value = settings.custom_args || "";
-			const appSelect = document.getElementById("app");
-			if (settings.app) appSelect.value = settings.app;
-			updateDerivedDisplay();
+			for (const field of FIELDS) {
+				const stored = settings[field.key];
+				const value = stored === undefined || stored === null ? field.def : stored;
+				if (field.kind === "bool") {
+					el(field.key).checked = value === true;
+				} else if (field.kind === "text") {
+					el(field.key).value = value || "";
+				}
+			}
+			savedApp = settings.app || null;
+			renderAppOptions();
 		}
 
 		function populateApps(newApps) {
 			apps = newApps;
-			const select = document.getElementById("app");
-			const selected = select.dataset.selected || select.value;
-			select.innerHTML = '<option value="">Select an app&hellip;</option>';
+			renderAppOptions();
+		}
+
+		// Rebuilds the dropdown and selects `savedApp`. A saved app that isn't
+		// in the list gets its own "(not installed)" option, so its id
+		// round-trips through sendSettings() unchanged.
+		function renderAppOptions() {
+			const select = el("app");
+			select.replaceChildren(new Option("Select an app…", ""));
 			for (const app of apps) {
-				const opt = document.createElement("option");
-				opt.value = app.id;
-				opt.textContent = app.name;
-				select.appendChild(opt);
+				select.appendChild(new Option(app.name, app.id));
 			}
-			if (selected) select.value = selected;
+			if (savedApp && !apps.some((a) => a.id === savedApp)) {
+				const label = apps.length ? `${savedApp} (not installed)` : `${savedApp} (loading…)`;
+				select.appendChild(new Option(label, savedApp));
+			}
+			select.value = savedApp || "";
 			updateDerivedDisplay();
 		}
 
-		// Shows the read-only Path line and the Name/Exec placeholder hints for
-		// whichever app is currently selected - purely informational, derived
-		// fresh from the apps list, never written into settings itself.
+		// The read-only path line and the placeholders showing what each
+		// override would replace. Display only, never saved.
 		function updateDerivedDisplay() {
-			const selectedId = document.getElementById("app").value;
-			const app = apps.find((a) => a.id === selectedId);
-			document.getElementById("path").textContent = app ? app.path : "";
-			document.getElementById("name_override").placeholder = app ? app.name : "";
-			document.getElementById("exec_override").placeholder = app ? app.exec : "";
+			const app = apps.find((a) => a.id === el("app").value);
+			el("path").textContent = app ? app.path : "";
+			el("name_override").placeholder = app ? app.name : "";
+			el("exec_override").placeholder = app ? app.exec : "";
+			el("class_override").placeholder = app ? app.window_class : "(auto-detected)";
 		}
 
-		// Picking a different app resets every override back to "unset" (shown
-		// as its placeholder hint) rather than carrying edits from the
-		// previous app forward - overrides are fine-tuning for the currently
-		// selected app, not a way to build a synthetic one.
 		function onAppChanged() {
-			document.getElementById("class_override").value = "";
-			document.getElementById("name_override").value = "";
-			document.getElementById("icon_override").value = "";
-			document.getElementById("exec_override").value = "";
-			document.getElementById("custom_args").value = "";
+			savedApp = el("app").value || null;
+			for (const field of FIELDS) {
+				if (field.reset) el(field.key).value = "";
+			}
 			updateDerivedDisplay();
 			sendSettings();
 		}
 
 		function sendSettings() {
-			const settings = {
-				app: document.getElementById("app").value || null,
-				class_override: document.getElementById("class_override").value || null,
-				cycle_windows: document.getElementById("cycle_windows").checked,
-				minimize_when_focused: document.getElementById("minimize_when_focused").checked,
-				close_all_windows_on_hold: document.getElementById("close_all_windows_on_hold").checked,
-				name_override: document.getElementById("name_override").value || null,
-				icon_override: document.getElementById("icon_override").value || null,
-				exec_override: document.getElementById("exec_override").value || null,
-				custom_args: document.getElementById("custom_args").value || null,
-			};
-			websocket.send(JSON.stringify({
-				event: "setSettings",
-				context: uuid,
-				payload: settings,
-			}));
+			const settings = {};
+			for (const field of FIELDS) {
+				if (field.kind === "select") {
+					settings[field.key] = savedApp;
+				} else if (field.kind === "bool") {
+					settings[field.key] = el(field.key).checked;
+				} else {
+					const value = el(field.key).value.trim();
+					settings[field.key] = value === "" ? null : value;
+				}
+			}
+			websocket.send(JSON.stringify({ event: "setSettings", context: uuid, payload: settings }));
 		}
 
-		document.getElementById("app").addEventListener("change", onAppChanged);
-		for (const id of [
-			"class_override",
-			"cycle_windows",
-			"minimize_when_focused",
-			"close_all_windows_on_hold",
-			"name_override",
-			"icon_override",
-			"exec_override",
-			"custom_args",
-		]) {
-			document.getElementById(id).addEventListener("change", sendSettings);
+		el("app").addEventListener("change", onAppChanged);
+		for (const field of FIELDS) {
+			if (field.kind !== "select") el(field.key).addEventListener("change", sendSettings);
 		}
 	</script>
 </body>

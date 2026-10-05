@@ -1,0 +1,11 @@
+{
+  "app": "org.mozilla.firefox",
+  "class_override": null,
+  "cycle_windows": false,
+  "minimize_when_focused": true,
+  "name_override": null,
+  "icon_override": null,
+  "exec_override": null,
+  "custom_args": "--new-window",
+  "close_all_windows_on_hold": true
+}
