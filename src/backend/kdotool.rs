@@ -1,72 +1,54 @@
-use super::{BackendError, WindowBackend, WindowId};
+//! KDE Plasma backend: shells out to `kdotool`, which renders a `KWin` script
+//! from a template and runs it inside the compositor.
+
+use super::process::{check_status, run};
+use super::{BackendError, WindowBackend, WindowClass, WindowId};
 use async_trait::async_trait;
-use tokio::process::Command;
 
 pub struct KdotoolBackend;
 
-/// Parses `kdotool search --class <pattern>` output: one window id per line,
-/// e.g. `{a1b2c3d4-...}`. Empty output (no match) is not an error - kdotool
-/// exits non-zero when nothing matches, which the caller must distinguish
-/// from "kdotool itself is missing" separately (see list_windows below).
+/// Arguments for `kdotool search` implementing the matching contract.
+///
+/// kdotool pastes the pattern unescaped into the generated `KWin` JavaScript,
+/// inside both a double-quoted debug string and a ``String.raw`...` ``
+/// template, then uses it as an unanchored, case-insensitive regex. So the
+/// pattern must be (1) built only from a validated `WindowClass`, whose
+/// allowlist excludes quotes, backticks, `$`, braces and backslashes, and
+/// (2) anchored and escaped, so it means "exactly this class". `--class`
+/// plus `--classname` matches `KWin`'s `resourceClass` or `resourceName`,
+/// i.e. either `WM_CLASS` half / the Wayland `app_id`.
+fn search_args(class: &WindowClass) -> Vec<String> {
+    vec![
+        "search".to_string(),
+        "--class".to_string(),
+        "--classname".to_string(),
+        class.anchored_regex(),
+    ]
+}
+
+/// Parses `kdotool search` output: one `{uuid}` window id per line, in
+/// `KWin`'s `workspace.windowList()` order (creation order, stable across
+/// focus changes).
 fn parse_search_output(stdout: &str) -> Vec<WindowId> {
     stdout
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        .map(str::to_string)
+        .map(WindowId::new)
         .collect()
 }
 
 fn parse_single_id(stdout: &str) -> Option<WindowId> {
     let trimmed = stdout.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+    (!trimmed.is_empty()).then(|| WindowId::new(trimmed))
 }
 
-async fn run_kdotool(args: &[&str]) -> Result<std::process::Output, BackendError> {
-    Command::new("kdotool")
-        .args(args)
-        .output()
-        .await
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                BackendError::Unavailable("kdotool is not installed".to_string())
-            } else {
-                BackendError::CommandFailed(e.to_string())
-            }
-        })
-}
-
-/// Turns a non-success `kdotool` exit into `CommandFailed`, including stderr.
-/// Safe to use for any subcommand where "no result" is only ever expressed
-/// as empty stdout on exit 0, or where a non-zero exit is unambiguous (e.g.
-/// `windowactivate`/`windowminimize`, which don't have a "no match" case the
-/// way `search` does).
-fn check_status(output: &std::process::Output, cmd: &str) -> Result<(), BackendError> {
-    if output.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stderr = stderr.trim();
-    Err(BackendError::CommandFailed(if stderr.is_empty() {
-        format!("{cmd} exited with {}", output.status)
-    } else {
-        format!("{cmd} exited with {}: {stderr}", output.status)
-    }))
-}
-
-/// Interprets a completed `kdotool search` invocation. `kdotool search`
-/// exits non-zero BOTH when nothing matches and on a real error (e.g. no
-/// KWin D-Bus scripting interface), so exit status alone can't distinguish
-/// "no windows" from "broken session" - treating every non-zero exit as an
-/// error would break the common, legitimate no-match case. An error message
-/// on stderr with nothing on stdout is a much stronger signal of a real
-/// failure than a genuine no-match, which normally prints nothing to stderr
-/// either - so only escalate when both hold. This is a best-effort
-/// heuristic, not a guarantee (see finding #3 in the final review).
+/// Interprets a completed `kdotool search`. kdotool v0.2.3 (captured on the
+/// development machine) exits 0 with empty output when nothing matches, and
+/// that is the normal no-match case. A non-zero exit that printed an error
+/// and no ids is a real failure (e.g. no `KWin` scripting interface). A
+/// non-zero exit with nothing on either stream is still read as "no match",
+/// to stay tolerant of kdotool versions that signal no-match by exit code.
 fn interpret_search_output(
     stdout: &str,
     status_success: bool,
@@ -84,8 +66,10 @@ fn interpret_search_output(
 
 #[async_trait]
 impl WindowBackend for KdotoolBackend {
-    async fn list_windows(&self, class: &str) -> Result<Vec<WindowId>, BackendError> {
-        let output = run_kdotool(&["search", "--class", class]).await?;
+    async fn list_windows(&self, class: &WindowClass) -> Result<Vec<WindowId>, BackendError> {
+        let args = search_args(class);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = run("kdotool", &args).await?;
         interpret_search_output(
             &String::from_utf8_lossy(&output.stdout),
             output.status.success(),
@@ -94,22 +78,23 @@ impl WindowBackend for KdotoolBackend {
     }
 
     async fn activate(&self, id: &WindowId) -> Result<(), BackendError> {
-        let output = run_kdotool(&["windowactivate", id]).await?;
+        let output = run("kdotool", &["windowactivate", id.as_str()]).await?;
         check_status(&output, "kdotool windowactivate")
     }
 
     async fn minimize(&self, id: &WindowId) -> Result<(), BackendError> {
-        let output = run_kdotool(&["windowminimize", id]).await?;
+        let output = run("kdotool", &["windowminimize", id.as_str()]).await?;
         check_status(&output, "kdotool windowminimize")
     }
 
     async fn close(&self, id: &WindowId) -> Result<(), BackendError> {
-        let output = run_kdotool(&["windowclose", id]).await?;
+        let output = run("kdotool", &["windowclose", id.as_str()]).await?;
         check_status(&output, "kdotool windowclose")
     }
 
     async fn active_window(&self) -> Result<Option<WindowId>, BackendError> {
-        let output = run_kdotool(&["getactivewindow"]).await?;
+        let output = run("kdotool", &["getactivewindow"]).await?;
+        check_status(&output, "kdotool getactivewindow")?;
         Ok(parse_single_id(&String::from_utf8_lossy(&output.stdout)))
     }
 }
@@ -118,30 +103,60 @@ impl WindowBackend for KdotoolBackend {
 mod tests {
     use super::*;
 
+    // Captured from kdotool v0.2.3 on KDE Plasma 6 (Wayland):
+    // `kdotool search --class --classname '^plasmashell$'`, exit 0.
+    const SEARCH_PLASMASHELL: &str =
+        include_str!("../../tests/fixtures/kdotool-search-plasmashell.stdout");
+    // `kdotool search --class --classname '^opendeck-focus-launcher-no-such-app$'`:
+    // empty output, exit 0.
+    const SEARCH_NO_MATCH: &str =
+        include_str!("../../tests/fixtures/kdotool-search-no-match.stdout");
+    // `kdotool getactivewindow`, exit 0.
+    const GETACTIVEWINDOW: &str =
+        include_str!("../../tests/fixtures/kdotool-getactivewindow.stdout");
+
+    fn class(s: &str) -> WindowClass {
+        WindowClass::parse(s).unwrap()
+    }
+
     #[test]
-    fn parses_multiple_window_ids() {
-        let stdout =
-            "{aaaaaaaa-0000-0000-0000-000000000001}\n{bbbbbbbb-0000-0000-0000-000000000002}\n";
+    fn search_args_anchor_and_escape_the_class() {
         assert_eq!(
-            parse_search_output(stdout),
-            vec![
-                "{aaaaaaaa-0000-0000-0000-000000000001}".to_string(),
-                "{bbbbbbbb-0000-0000-0000-000000000002}".to_string(),
-            ]
+            search_args(&class("org.kde.kate")),
+            vec!["search", "--class", "--classname", r"^org\.kde\.kate$"]
         );
     }
 
     #[test]
-    fn parses_empty_output_as_no_windows() {
-        assert_eq!(parse_search_output(""), Vec::<WindowId>::new());
-        assert_eq!(parse_search_output("\n\n"), Vec::<WindowId>::new());
+    fn search_args_never_carry_template_or_regex_syntax_through() {
+        // Whatever reaches kdotool went through WindowClass::parse, which
+        // rejects anything that could break out of kdotool's JS template.
+        assert!(WindowClass::parse("x`${callDBus()}`").is_err());
+        assert!(WindowClass::parse("a\"); evil(); (\"").is_err());
+        assert_eq!(search_args(&class("crx_abc"))[3], "^crx_abc$");
     }
 
     #[test]
-    fn parses_single_active_window_id() {
+    fn parses_a_real_multi_window_search() {
+        let ids = parse_search_output(SEARCH_PLASMASHELL);
+        assert_eq!(ids.len(), 4);
         assert_eq!(
-            parse_single_id("{aaaaaaaa-0000-0000-0000-000000000001}\n"),
-            Some("{aaaaaaaa-0000-0000-0000-000000000001}".to_string())
+            ids[0],
+            WindowId::new("{66f646df-02d5-4289-bc00-aba6b4d45d2a}")
+        );
+    }
+
+    #[test]
+    fn real_no_match_output_is_an_empty_list_not_an_error() {
+        let result = interpret_search_output(SEARCH_NO_MATCH, true, "");
+        assert_eq!(result.unwrap(), Vec::<WindowId>::new());
+    }
+
+    #[test]
+    fn parses_a_real_active_window_id() {
+        assert_eq!(
+            parse_single_id(GETACTIVEWINDOW),
+            Some(WindowId::new("{cdbe9b36-5750-4d4a-8338-1479a28592da}"))
         );
     }
 
@@ -152,51 +167,22 @@ mod tests {
     }
 
     #[test]
-    fn search_success_with_no_matches_is_not_an_error() {
-        let result = interpret_search_output("", true, "");
-        assert_eq!(result.unwrap(), Vec::<WindowId>::new());
-    }
-
-    #[test]
-    fn search_non_zero_exit_with_empty_stdout_and_stderr_is_treated_as_no_match() {
-        // kdotool's documented no-match case: non-zero exit, nothing on
-        // either stream. Must NOT be treated as an error, or a genuinely
-        // empty desktop would look like a broken backend.
+    fn non_zero_exit_with_nothing_on_either_stream_is_read_as_no_match() {
         let result = interpret_search_output("", false, "");
         assert_eq!(result.unwrap(), Vec::<WindowId>::new());
     }
 
     #[test]
-    fn search_non_zero_exit_with_stderr_and_empty_stdout_is_a_command_failure() {
+    fn non_zero_exit_with_stderr_and_empty_stdout_is_a_command_failure() {
         let result = interpret_search_output("", false, "kdotool: no KWin scripting interface");
         assert!(matches!(result, Err(BackendError::CommandFailed(_))));
     }
 
     #[test]
-    fn search_non_zero_exit_with_matches_on_stdout_still_returns_them() {
+    fn non_zero_exit_with_matches_on_stdout_still_returns_them() {
         // Defensive: if kdotool ever prints a partial match list alongside a
         // non-zero exit, prefer the data it did produce over discarding it.
         let result = interpret_search_output("{aaaa}\n", false, "some warning");
-        assert_eq!(result.unwrap(), vec!["{aaaa}".to_string()]);
-    }
-
-    #[test]
-    fn check_status_ok_on_success() {
-        let output = std::process::Command::new("true").output().unwrap();
-        assert!(check_status(&output, "true").is_ok());
-    }
-
-    #[test]
-    fn check_status_reports_command_failed_with_stderr_on_non_zero_exit() {
-        let output = std::process::Command::new("sh")
-            .args(["-c", "echo 'window not found' 1>&2; exit 1"])
-            .output()
-            .unwrap();
-        match check_status(&output, "kdotool windowactivate") {
-            Err(BackendError::CommandFailed(msg)) => {
-                assert!(msg.contains("window not found"), "message was: {msg}");
-            }
-            other => panic!("expected CommandFailed, got {other:?}"),
-        }
+        assert_eq!(result.unwrap(), vec![WindowId::new("{aaaa}")]);
     }
 }

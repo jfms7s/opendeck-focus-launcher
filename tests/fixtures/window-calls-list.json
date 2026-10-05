@@ -1,0 +1,7 @@
+[
+  {"in_current_workspace": true, "workspace": 0, "wm_class": null, "wm_class_instance": null, "title": "", "pid": 1801, "id": 1022, "frame_type": 0, "window_type": 0, "width": 1920, "height": 32, "x": 0, "y": 0, "focus": false},
+  {"in_current_workspace": true, "workspace": 0, "wm_class": "firefox", "wm_class_instance": "Navigator", "title": "Mozilla Firefox", "pid": 4120, "id": 2210, "frame_type": 0, "window_type": 0, "width": 1280, "height": 1000, "x": 40, "y": 40, "focus": false},
+  {"in_current_workspace": true, "workspace": 0, "wm_class": "firefox-esr", "wm_class_instance": "Navigator", "title": "Firefox ESR", "pid": 4377, "id": 1983, "frame_type": 0, "window_type": 0, "width": 1280, "height": 1000, "x": 60, "y": 60, "focus": false},
+  {"in_current_workspace": true, "workspace": 0, "wm_class": "Firefox", "wm_class_instance": "Navigator", "title": "Private Browsing", "pid": 4120, "id": 1904, "frame_type": 0, "window_type": 0, "width": 1280, "height": 1000, "x": 80, "y": 80, "focus": false},
+  {"in_current_workspace": true, "workspace": 0, "wm_class": "org.gnome.Nautilus", "wm_class_instance": "org.gnome.Nautilus", "title": "Home", "pid": 5100, "id": 2044, "frame_type": 0, "window_type": 0, "width": 900, "height": 700, "x": 100, "y": 100, "focus": true}
+]

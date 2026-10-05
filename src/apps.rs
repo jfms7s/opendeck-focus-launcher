@@ -1,38 +1,35 @@
+//! Installed-app discovery (`.desktop` files) and launching.
+//!
+//! Launching never goes through a shell. `Exec=` lines are tokenized with
+//! the Desktop Entry quoting rules, user-typed overrides with shell-style
+//! quoting only (no expansion), and the resulting argv is spawned directly.
+
 use freedesktop_desktop_entry::{DesktopEntry, Iter, default_paths};
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppEntry {
     pub id: String,
     pub name: String,
+    /// `StartupWMClass=`, else the desktop id (see `resolve_window_class`).
     pub window_class: String,
+    /// The raw `Exec=` value, tokenized only at launch time.
     pub exec: String,
-    /// The `.desktop` file's own absolute path - shown read-only in the
-    /// property inspector (matching what the reference Launch App plugin
-    /// persists as its whole `settings.app`) and used to resolve the app's
-    /// own icon via `tux_icons::IconFetcher::get_icon_path_from_desktop`.
-    pub path: std::path::PathBuf,
+    /// The raw `Icon=` value: a theme icon name or an absolute path.
+    pub icon: Option<String>,
+    /// The `.desktop` file's own path, shown read-only in the property
+    /// inspector and substituted for `%k`.
+    pub path: PathBuf,
 }
 
-/// Strips the standard Exec field placeholders (%f, %F, %u, %U, %d, %D, %n, %N,
-/// %i, %c, %k, %v, %m) that a launcher is expected to fill in but this plugin
-/// never receives real values for.
-pub fn strip_exec_placeholders(exec: &str) -> String {
-    let placeholders = [
-        "%f", "%F", "%u", "%U", "%d", "%D", "%n", "%N", "%i", "%c", "%k", "%v", "%m",
-    ];
-    let mut result = exec.to_string();
-    for p in placeholders {
-        result = result.replace(p, "");
-    }
-    result.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// The window class to search for: an explicit StartupWMClass if the entry
+/// The window class to search for: an explicit `StartupWMClass` if the entry
 /// declares one, else the desktop file's own id (the common fallback for
-/// entries that don't set StartupWMClass).
+/// entries that don't set `StartupWMClass`).
 pub fn resolve_window_class(entry_id: &str, startup_wm_class: Option<&str>) -> String {
     startup_wm_class
+        .map(str::trim)
         .filter(|c| !c.is_empty())
         .unwrap_or(entry_id)
         .to_string()
@@ -42,22 +39,12 @@ pub fn list_installed_apps() -> Vec<AppEntry> {
     list_installed_apps_from_paths(default_paths())
 }
 
-fn list_installed_apps_from_paths<I: IntoIterator<Item = std::path::PathBuf>>(
-    paths: I,
-) -> Vec<AppEntry> {
+fn list_installed_apps_from_paths<I: IntoIterator<Item = PathBuf>>(paths: I) -> Vec<AppEntry> {
     let locales = freedesktop_desktop_entry::get_languages_from_env();
-    // NOTE (deviation from the brief's exact code): `freedesktop-desktop-entry`
-    // 0.8's `Iter::new` takes an `Iterator<Item = PathBuf>`, not an
-    // `IntoIterator`, so we call `.into_iter()` on `paths` ourselves. And
-    // `Iter::entries`/`DesktopEntry::name` take `Option<&[L]>` / `&[L]`
-    // (a slice), not a reference to the `Vec` directly, so we pass
-    // `locales.as_slice()` rather than `&locales` to avoid relying on
-    // deref coercion through the `Option` wrapper.
-    // XDG data dirs can legitimately list the same app id twice (e.g. a
-    // Flatpak override in ~/.local/share/applications shadowing the system
-    // copy in /usr/share/applications) - `default_paths()`/`Iter` walk user
-    // dirs before system dirs, i.e. in XDG precedence order, so keeping the
-    // first occurrence of each id and dropping later ones is correct.
+    // XDG data dirs can list the same app id twice (e.g. a Flatpak override
+    // in ~/.local/share/applications shadowing the system copy).
+    // `default_paths()`/`Iter` walk user dirs before system dirs, i.e. in XDG
+    // precedence order, so keeping the first occurrence of each id is right.
     let mut seen_ids: HashSet<String> = HashSet::new();
     let mut apps: Vec<AppEntry> = Iter::new(paths.into_iter())
         .entries(Some(locales.as_slice()))
@@ -71,10 +58,14 @@ fn list_installed_apps_from_paths<I: IntoIterator<Item = std::path::PathBuf>>(
             id: entry.id().to_string(),
             name: entry
                 .name(locales.as_slice())
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| entry.id().to_string()),
+                .map_or_else(|| entry.id().to_string(), |n| n.to_string()),
             window_class: resolve_window_class(entry.id(), entry.startup_wm_class()),
             exec: entry.exec().unwrap_or_default().to_string(),
+            icon: entry
+                .icon()
+                .map(str::trim)
+                .filter(|i| !i.is_empty())
+                .map(str::to_string),
             path: entry.path.clone(),
         })
         .collect();
@@ -82,26 +73,266 @@ fn list_installed_apps_from_paths<I: IntoIterator<Item = std::path::PathBuf>>(
     apps
 }
 
-/// Detects Flatpak sandboxing the same way `oadesktopentry` does, so a
-/// sandboxed plugin can still launch a host app.
-pub async fn launch_app(exec: &str, args: Option<&str>) -> Result<(), std::io::Error> {
-    let mut command_line = strip_exec_placeholders(exec);
-    if let Some(extra) = args {
-        command_line.push(' ');
-        command_line.push_str(extra);
-    }
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ExecError {
+    #[error("the launch command is empty")]
+    Empty,
+    #[error("unterminated quote in the launch command")]
+    UnterminatedQuote,
+    #[error("could not split the arguments: {0}")]
+    BadArguments(String),
+}
 
-    let mut cmd = if std::env::var("FLATPAK_ID").is_ok() {
-        let mut c = tokio::process::Command::new("flatpak-spawn");
-        c.arg("--host").arg("sh").arg("-c").arg(command_line);
-        c
-    } else {
-        let mut c = tokio::process::Command::new("sh");
-        c.arg("-c").arg(command_line);
-        c
+/// What the `%i`, `%c` and `%k` field codes expand to.
+pub struct ExecContext<'a> {
+    pub icon: Option<&'a str>,
+    pub name: &'a str,
+    pub desktop_file: &'a Path,
+}
+
+impl<'a> ExecContext<'a> {
+    pub fn for_entry(entry: &'a AppEntry) -> Self {
+        Self {
+            icon: entry.icon.as_deref(),
+            name: &entry.name,
+            desktop_file: &entry.path,
+        }
+    }
+}
+
+/// Undoes the Desktop Entry *string* escapes (`\s`, `\n`, `\t`, `\r`,
+/// `\\`). Other backslashes are kept for the quoting pass that follows.
+fn unescape_string_value(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            Some('s') => out.push(' '),
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('\\') => out.push('\\'),
+            _ => {
+                out.push('\\');
+                continue;
+            }
+        }
+        chars.next();
+    }
+    out
+}
+
+struct RawArg {
+    text: String,
+    quoted: bool,
+}
+
+/// Splits an `Exec=` value per the Desktop Entry spec: whitespace separates
+/// arguments; double quotes group, and inside them `\"`, `` \` ``, `\$` and
+/// `\\` stand for the literal character.
+fn split_exec(value: &str) -> Result<Vec<RawArg>, ExecError> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_arg = false;
+    let mut quoted = false;
+    let mut in_quotes = false;
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            match c {
+                '"' => in_quotes = false,
+                '\\' if matches!(chars.peek(), Some('"' | '`' | '$' | '\\')) => {
+                    current.extend(chars.next());
+                }
+                _ => current.push(c),
+            }
+        } else if c.is_whitespace() {
+            if in_arg {
+                args.push(RawArg {
+                    text: std::mem::take(&mut current),
+                    quoted,
+                });
+                in_arg = false;
+                quoted = false;
+            }
+        } else if c == '"' {
+            in_quotes = true;
+            in_arg = true;
+            quoted = true;
+        } else {
+            current.push(c);
+            in_arg = true;
+        }
+    }
+    if in_quotes {
+        return Err(ExecError::UnterminatedQuote);
+    }
+    if in_arg {
+        args.push(RawArg {
+            text: current,
+            quoted,
+        });
+    }
+    Ok(args)
+}
+
+/// Expands one unquoted argument's field codes. No files or URLs are ever
+/// passed, so `%f %F %u %U` vanish; `%i` becomes `--icon <Icon>`, `%c` the
+/// name and `%k` the `.desktop` path, as the spec says; deprecated codes
+/// vanish; `%%` is a literal `%`. Codes embedded mid-argument (not valid per
+/// the spec) are dropped from the argument, keeping the rest of it.
+fn expand_field_codes(arg: &str, ctx: &ExecContext) -> Vec<String> {
+    match arg {
+        "%f" | "%F" | "%u" | "%U" | "%d" | "%D" | "%n" | "%N" | "%v" | "%m" => Vec::new(),
+        "%i" => ctx
+            .icon
+            .map(|icon| vec!["--icon".to_string(), icon.to_string()])
+            .unwrap_or_default(),
+        "%c" => vec![ctx.name.to_string()],
+        "%k" => vec![ctx.desktop_file.to_string_lossy().into_owned()],
+        _ => {
+            let mut out = String::with_capacity(arg.len());
+            let mut chars = arg.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c != '%' {
+                    out.push(c);
+                    continue;
+                }
+                match chars.peek() {
+                    Some('%') => {
+                        out.push('%');
+                        chars.next();
+                    }
+                    Some(code) if code.is_ascii_alphabetic() => {
+                        chars.next();
+                    }
+                    _ => out.push('%'),
+                }
+            }
+            if out.is_empty() {
+                Vec::new()
+            } else {
+                vec![out]
+            }
+        }
+    }
+}
+
+/// Turns a `.desktop` `Exec=` value into an argv.
+pub fn parse_desktop_exec(raw: &str, ctx: &ExecContext) -> Result<Vec<String>, ExecError> {
+    let argv: Vec<String> = split_exec(&unescape_string_value(raw))?
+        .into_iter()
+        .flat_map(|arg| {
+            if arg.quoted {
+                vec![arg.text]
+            } else {
+                expand_field_codes(&arg.text, ctx)
+            }
+        })
+        .collect();
+    if argv.is_empty() {
+        return Err(ExecError::Empty);
+    }
+    Ok(argv)
+}
+
+/// Splits a user-typed command or argument list with shell-style quoting
+/// (single quotes, double quotes, backslashes) but no expansion of any kind:
+/// `$(...)`, backticks, `;`, `|` and globs are plain text. Standalone field
+/// codes (pasted from an `Exec=` line) are dropped.
+pub fn split_user_command(raw: &str) -> Result<Vec<String>, ExecError> {
+    let words = shell_words::split(raw).map_err(|e| ExecError::BadArguments(e.to_string()))?;
+    Ok(words
+        .into_iter()
+        .filter(|w| {
+            !matches!(
+                w.as_str(),
+                "%f" | "%F"
+                    | "%u"
+                    | "%U"
+                    | "%i"
+                    | "%c"
+                    | "%k"
+                    | "%d"
+                    | "%D"
+                    | "%n"
+                    | "%N"
+                    | "%v"
+                    | "%m"
+            )
+        })
+        .collect())
+}
+
+/// The argv to launch: `exec_override` (user-typed) if given, else the
+/// entry's `Exec=`, followed by any `custom_args`.
+pub fn build_launch_argv(
+    entry: &AppEntry,
+    exec_override: Option<&str>,
+    custom_args: Option<&str>,
+) -> Result<Vec<String>, ExecError> {
+    let mut argv = match exec_override {
+        Some(cmd) => split_user_command(cmd)?,
+        None => parse_desktop_exec(&entry.exec, &ExecContext::for_entry(entry))?,
     };
-    cmd.spawn()?;
-    Ok(())
+    if argv.is_empty() {
+        return Err(ExecError::Empty);
+    }
+    if let Some(extra) = custom_args {
+        argv.extend(split_user_command(extra)?);
+    }
+    Ok(argv)
+}
+
+/// Starts a process from an argv. A trait so orchestration tests can record
+/// launches instead of spawning anything.
+pub trait Launcher: Send + Sync {
+    fn launch(&self, argv: &[String]) -> std::io::Result<()>;
+}
+
+/// Spawns directly, or through `flatpak-spawn --host` when the plugin runs
+/// inside a Flatpak sandbox (detected the same way `oadesktopentry` does).
+pub struct SystemLauncher;
+
+/// The program and arguments actually executed for `argv`.
+fn host_argv(argv: &[String], sandboxed: bool) -> Vec<String> {
+    if sandboxed {
+        let mut wrapped = vec!["flatpak-spawn".to_string(), "--host".to_string()];
+        wrapped.extend_from_slice(argv);
+        wrapped
+    } else {
+        argv.to_vec()
+    }
+}
+
+impl Launcher for SystemLauncher {
+    fn launch(&self, argv: &[String]) -> std::io::Result<()> {
+        let full = host_argv(argv, std::env::var_os("FLATPAK_ID").is_some());
+        let (program, rest) = full
+            .split_first()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty argv"))?;
+        let mut child = tokio::process::Command::new(program)
+            .args(rest)
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| std::io::Error::new(e.kind(), format!("{program}: {e}")))?;
+        // Reap the child when it exits instead of leaving that to tokio's
+        // orphan reaper, and log a failing exit (e.g. `flatpak-spawn` not
+        // finding the host binary) since nothing else would report it.
+        let program = program.clone();
+        tokio::spawn(async move {
+            match child.wait().await {
+                Ok(status) if !status.success() => log::warn!("{program} exited with {status}"),
+                Ok(_) => {}
+                Err(e) => log::warn!("could not wait for {program}: {e}"),
+            }
+        });
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -109,17 +340,197 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    fn entry(exec: &str) -> AppEntry {
+        AppEntry {
+            id: "org.example.App".to_string(),
+            name: "Example App".to_string(),
+            window_class: "example".to_string(),
+            exec: exec.to_string(),
+            icon: Some("example-icon".to_string()),
+            path: PathBuf::from("/usr/share/applications/org.example.App.desktop"),
+        }
+    }
+
+    fn desktop_argv(exec: &str) -> Result<Vec<String>, ExecError> {
+        let e = entry(exec);
+        parse_desktop_exec(&e.exec, &ExecContext::for_entry(&e))
+    }
+
     #[test]
-    fn strips_every_known_placeholder() {
+    fn drops_file_and_url_field_codes() {
         assert_eq!(
-            strip_exec_placeholders("firefox %u --new-window %F"),
-            "firefox --new-window"
+            desktop_argv("firefox %u --new-window %F").unwrap(),
+            vec!["firefox", "--new-window"]
         );
     }
 
     #[test]
     fn leaves_plain_exec_untouched() {
-        assert_eq!(strip_exec_placeholders("kate"), "kate");
+        assert_eq!(desktop_argv("kate").unwrap(), vec!["kate"]);
+    }
+
+    // The next three `Exec=` lines are real ones from .desktop files on the
+    // development machine. `DesktopEntry::parse_exec` from
+    // freedesktop-desktop-entry 0.8.3 rejects the first two ("unmatched
+    // quote") and splits the third's quoted argument into three pieces.
+    #[test]
+    fn real_quoted_program_path() {
+        assert_eq!(
+            desktop_argv("\"/usr/bin/opendeck\" %u").unwrap(),
+            vec!["/usr/bin/opendeck"]
+        );
+        assert_eq!(
+            desktop_argv("\"/home/user/.local/bin/claude\" --handle-uri %u").unwrap(),
+            vec!["/home/user/.local/bin/claude", "--handle-uri"]
+        );
+    }
+
+    #[test]
+    fn real_quoted_argument_with_spaces() {
+        assert_eq!(
+            desktop_argv(
+                "/usr/libexec/ibus-ui-gtk3 --enable-wayland-im --exec-daemon --daemon-args \"--xim --panel disable\""
+            )
+            .unwrap(),
+            vec![
+                "/usr/libexec/ibus-ui-gtk3",
+                "--enable-wayland-im",
+                "--exec-daemon",
+                "--daemon-args",
+                "--xim --panel disable"
+            ]
+        );
+    }
+
+    #[test]
+    fn real_flatpak_exec_line() {
+        assert_eq!(
+            desktop_argv("/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=firefox --file-forwarding org.mozilla.firefox @@u %u @@").unwrap(),
+            vec![
+                "/usr/bin/flatpak", "run", "--branch=stable", "--arch=x86_64", "--command=firefox",
+                "--file-forwarding", "org.mozilla.firefox", "@@u", "@@"
+            ]
+        );
+    }
+
+    #[test]
+    fn shell_metacharacters_are_plain_arguments() {
+        assert_eq!(
+            desktop_argv("app $(touch /tmp/pwned) ; rm -rf ~ `id`").unwrap(),
+            vec![
+                "app",
+                "$(touch",
+                "/tmp/pwned)",
+                ";",
+                "rm",
+                "-rf",
+                "~",
+                "`id`"
+            ]
+        );
+    }
+
+    #[test]
+    fn quoted_escapes_and_string_escapes() {
+        assert_eq!(
+            desktop_argv(r#"sh-free "a \"quoted\" \$HOME \\ \`x\`" b\sc"#).unwrap(),
+            // `\s` is a *string* escape for a space, which the quoting pass
+            // then treats as a separator, as the spec requires.
+            vec!["sh-free", r#"a "quoted" $HOME \ `x`"#, "b", "c"]
+        );
+    }
+
+    #[test]
+    fn percent_handling() {
+        assert_eq!(desktop_argv("app 100%%").unwrap(), vec!["app", "100%"]);
+        assert_eq!(desktop_argv("app --url=%u").unwrap(), vec!["app", "--url="]);
+        assert_eq!(
+            desktop_argv("app %i %c %k").unwrap(),
+            vec![
+                "app",
+                "--icon",
+                "example-icon",
+                "Example App",
+                "/usr/share/applications/org.example.App.desktop"
+            ]
+        );
+        assert_eq!(desktop_argv("app %d %D %n %N %v %m").unwrap(), vec!["app"]);
+        assert_eq!(desktop_argv("app \"%u\"").unwrap(), vec!["app", "%u"]);
+    }
+
+    #[test]
+    fn rejects_empty_and_unterminated_exec() {
+        assert_eq!(desktop_argv(""), Err(ExecError::Empty));
+        assert_eq!(desktop_argv("%u %F"), Err(ExecError::Empty));
+        assert_eq!(desktop_argv("\"app"), Err(ExecError::UnterminatedQuote));
+    }
+
+    #[test]
+    fn exec_override_is_split_without_a_shell() {
+        let argv = build_launch_argv(
+            &entry("ignored"),
+            Some("firefox --private-window 'two words' $(id)"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            argv,
+            vec!["firefox", "--private-window", "two words", "$(id)"]
+        );
+    }
+
+    #[test]
+    fn custom_args_are_appended_as_separate_arguments() {
+        let argv = build_launch_argv(
+            &entry("firefox %u"),
+            None,
+            Some("--new-window \"https://example.com/a b\"; reboot"),
+        )
+        .unwrap();
+        assert_eq!(
+            argv,
+            vec![
+                "firefox",
+                "--new-window",
+                "https://example.com/a b;",
+                "reboot"
+            ]
+        );
+    }
+
+    #[test]
+    fn exec_override_drops_pasted_field_codes() {
+        let argv = build_launch_argv(&entry("x"), Some("firefox %u"), None).unwrap();
+        assert_eq!(argv, vec!["firefox"]);
+    }
+
+    #[test]
+    fn bad_user_quoting_is_an_error_not_a_guess() {
+        assert!(matches!(
+            build_launch_argv(&entry("x"), Some("firefox 'unterminated"), None),
+            Err(ExecError::BadArguments(_))
+        ));
+        assert!(matches!(
+            build_launch_argv(&entry("x"), Some("   "), None),
+            Err(ExecError::Empty)
+        ));
+    }
+
+    #[test]
+    fn flatpak_sandbox_wraps_the_argv_without_a_shell() {
+        let argv = vec!["firefox".to_string(), "--new-window".to_string()];
+        assert_eq!(host_argv(&argv, false), argv);
+        assert_eq!(
+            host_argv(&argv, true),
+            vec!["flatpak-spawn", "--host", "firefox", "--new-window"]
+        );
+    }
+
+    #[tokio::test]
+    async fn launching_a_missing_binary_fails_instead_of_reporting_success() {
+        let result = SystemLauncher.launch(&["opendeck-focus-launcher-no-such-binary".to_string()]);
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]
@@ -137,6 +548,10 @@ mod tests {
             resolve_window_class("org.kde.kate", Some("")),
             "org.kde.kate"
         );
+        assert_eq!(
+            resolve_window_class("org.kde.kate", Some("  ")),
+            "org.kde.kate"
+        );
     }
 
     #[test]
@@ -147,7 +562,7 @@ mod tests {
         let mut file = std::fs::File::create(apps_dir.join("test-app.desktop")).unwrap();
         writeln!(
             file,
-            "[Desktop Entry]\nType=Application\nName=Test App\nExec=test-app %u\nStartupWMClass=testapp\n"
+            "[Desktop Entry]\nType=Application\nName=Test App\nExec=test-app %u\nIcon=test-icon\nStartupWMClass=testapp\n"
         )
         .unwrap();
 
@@ -156,6 +571,7 @@ mod tests {
         assert_eq!(apps[0].name, "Test App");
         assert_eq!(apps[0].window_class, "testapp");
         assert_eq!(apps[0].exec, "test-app %u");
+        assert_eq!(apps[0].icon.as_deref(), Some("test-icon"));
         assert_eq!(apps[0].path, apps_dir.join("test-app.desktop"));
     }
 

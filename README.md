@@ -13,88 +13,127 @@ new process, even when the app is already open.
 
 - **KDE Plasma** (X11 or Wayland) — via [`kdotool`](https://github.com/jinliu/kdotool),
   which must be installed and on `PATH`.
-- **GNOME Shell** — via the [Window Calls](https://github.com/ickyicky/window-calls)
+- **GNOME Shell** (X11 or Wayland) — *experimental, never run against a live
+  session* — via the [Window Calls](https://github.com/ickyicky/window-calls)
   GNOME Shell extension, which must be installed and enabled.
-- **Other X11 window managers** — via `wmctrl` and `xdotool`, which must be
+- **Other window managers in an X11 session** — *experimental, never run
+  against a live session* — via `wmctrl` and `xdotool`, which must be
   installed and on `PATH`.
 
-If none of the above is detected, the plugin logs why and takes no action
-rather than guessing.
+Other Wayland compositors (sway, Hyprland, niri, ...) are not supported: their
+native windows are invisible to `wmctrl`, so the plugin does not guess. If no
+backend fits, it logs why and every key press shows an alert instead of
+acting.
+
+A key matches windows whose class (or WM_CLASS instance name) is exactly the
+app's window class, ignoring case: `firefox` never matches `firefox-esr`.
 
 ## Installing
 
-Download the latest `.streamDeckPlugin` for your architecture from
-[Releases](https://github.com/jfms7s/opendeck-focus-launcher/releases), then
-either double-click it (if your file manager associates the extension with
-OpenDeck) or unzip it into `~/.config/opendeck/plugins/` and restart OpenDeck
-(plugins are only loaded at startup).
+Download `opendeck-focus-launcher.streamDeckPlugin` from the latest
+[release](https://github.com/jfms7s/opendeck-focus-launcher/releases) (one
+bundle with both x86_64 and aarch64 binaries; check it against the release's
+`SHA256SUMS`), then either double-click it (if your file manager associates
+the extension with OpenDeck) or unzip it into `~/.config/opendeck/plugins/`
+and restart OpenDeck (plugins are only loaded at startup).
 
 ## Using a key
 
 1. Add a **Focus or Launch** key in OpenDeck.
-2. Pick an app from the dropdown. Its `.desktop` file path is shown
-   underneath for reference.
-3. Leave "Cycle to next window" and "Minimize when already focused" checked
-   for the default behavior described above. Unchecking "Cycle to next
-   window" means a repeat press does nothing (instead of cycling) once the
-   app has several windows open and one is already focused; unchecking
-   "Minimize when already focused" means a repeat press does nothing
-   (instead of minimizing) when the app has a single window and it's already
-   focused.
-4. Check "Press and hold to close all windows" to make holding the key down
-   (instead of a normal tap) close every open window for that app, rather
-   than focusing/launching/cycling/minimizing. Off by default.
-5. Expand **Advanced overrides** to fine-tune the selected app — each field
-   is auto-filled (shown as its placeholder hint where applicable) and only
-   takes effect once you actually type something in it:
-   - **Window class** — only needed if the app reports the wrong one.
-   - **Name** — sets the key's title; leave blank to use the app's own name.
-   - **Icon name** — an icon theme name to resolve instead of the app's own
-     icon.
-   - **Exec** — overrides the launch command.
-   - **Custom arguments** — extra arguments appended when launching.
+2. **App** — pick an app from the dropdown. Its `.desktop` file path is shown
+   underneath for reference. If the saved app is no longer installed it stays
+   selected, marked "(not installed)", and the key alerts when pressed.
+3. **Behaviour** — leave "Cycle to the next window if several are open" and
+   "Minimize when already focused" checked for the default behavior described
+   above. Unchecking the first means a repeat press does nothing (instead of
+   cycling) once the app has several windows open and one is focused;
+   unchecking the second means a repeat press does nothing (instead of
+   minimizing) when the app's single window is already focused. Check "Press
+   and hold to close all windows" to make holding the key or dial (past
+   ~500 ms) close every window of that app instead. Off by default.
+4. **Appearance & matching** and **Launch** — optional overrides for the
+   selected app. Each field shows the app's own value as its placeholder and
+   only takes effect once you type something in it:
+   - **Name** — the key's title.
+   - **Icon name** — an icon theme name, or an absolute path to an image, to
+     show instead of the app's own icon.
+   - **Window class** — only needed if the app's windows report a different
+     class than its `.desktop` file declares (letters, digits, spaces and
+     `. _ - +` only).
+   - **Command** — replaces the app's launch command.
+   - **Extra arguments** — appended to the command.
 
-   Picking a different app resets every override on that key back to unset.
+   Commands are run directly, never through a shell: quotes group words, but
+   `$(...)`, backticks, `;`, `|` and globs are plain text. Picking a different
+   app resets every override on that key.
+
+Some apps' running windows don't use the class their `.desktop` file
+declares. Chrome/Chromium PWAs are handled automatically (the key retries
+with the desktop id). For others, such as the Plex snap, find the real class
+(`kdotool search --class . getwindowclassname %@` on KDE) and set it as the
+Window class override.
 
 ## Manual smoke-test checklist
 
-Run this against a live desktop session before cutting a release (only KDE
-Plasma has been verified so far — see the entries below):
+The decision logic and the tool-output parsers are unit-tested, but the real
+calls into kdotool, Window Calls and wmctrl/xdotool, the OpenDeck events and
+the property inspector in OpenDeck are only checked by hand. **None of these
+rows has a recorded run yet.** Run them against a live session before
+publishing a release draft, and record the result (date, version, OK / FAIL
+and notes) in the release notes.
 
-- [ ] App with no window open → key press launches it. *(KDE: verified / not yet verified)*
-- [ ] App running in the background → key press focuses its window. *(KDE: verified / not yet verified)*
-- [ ] App focused, one window → key press minimizes it. *(KDE: verified / not yet verified)*
-- [ ] App focused, several windows, cycling on → key press moves to the next
-      one, wrapping back to the first. *(KDE: verified / not yet verified)*
-- [ ] Cycling off, app focused, several windows → key press does nothing. *(KDE: verified / not yet verified)*
-- [ ] Minimize-when-focused off, app focused, one window → key press does
-      nothing. *(KDE: verified / not yet verified)*
-- [ ] Close-all-on-hold on, app has several windows open → pressing and
-      holding the key (past ~500ms) then releasing closes all of them; a
-      normal tap still focuses/cycles/minimizes as usual. *(KDE: verified /
-      not yet verified)*
-- [ ] Close-all-on-hold off → holding the key does the same thing a normal
-      tap would. *(KDE: verified / not yet verified)*
-- [ ] GNOME Shell, same checks above, with the Window Calls extension
-      installed. *(not yet verified — no GNOME session available during
-      development)*
-- [ ] Plain X11 window manager, same checks above. *(not yet verified — no
-      X11 session available during development)*
-- [ ] Selecting an app sets the key's title and icon to match it. *(KDE: verified / not yet verified)*
-- [ ] Setting Name/Icon/Exec/Custom arguments overrides changes the key's
-      title, icon, and launch behavior accordingly; clearing them reverts to
-      the app's own values. *(KDE: verified / not yet verified)*
-- [ ] Picking a different app resets those overrides. *(KDE: verified / not yet verified)*
+| # | Check | KDE Plasma | GNOME Shell | X11 WM |
+|---|---|---|---|---|
+| 1 | App with no window open → press launches it once. | not yet run | not yet run | not yet run |
+| 2 | Press twice quickly while a slow app (browser) cold-starts → only one instance. | not yet run | not yet run | not yet run |
+| 3 | App running in the background → press focuses its window. | not yet run | not yet run | not yet run |
+| 4 | App focused, one window → press minimizes it. | not yet run | not yet run | not yet run |
+| 5 | App focused, three windows, cycling on → three presses visit all three, wrapping. | not yet run | not yet run | not yet run |
+| 6 | Cycling off, app focused, several windows → press does nothing. | not yet run | not yet run | not yet run |
+| 7 | Minimize-when-focused off, app focused, one window → press does nothing. | not yet run | not yet run | not yet run |
+| 8 | Close-all-on-hold on, app has several windows, plus a similarly named app open (e.g. Firefox and Firefox ESR) → holding closes only the app's own windows; a tap still focuses/cycles/minimizes. | not yet run | not yet run | not yet run |
+| 9 | Close-all-on-hold off → holding does the same as a tap. | not yet run | not yet run | not yet run |
+| 10 | Close-all-on-hold on a dial press → same as on a key. | not yet run | not yet run | not yet run |
+| 11 | App with a reverse-DNS class (e.g. `org.kde.kate`) → focuses instead of relaunching. | not yet run | not yet run | not yet run |
+| 12 | Selecting an app sets the key's title and icon. | not yet run | not yet run | not yet run |
+| 13 | Name/Icon/Window class/Command/Extra arguments overrides change the title, icon, matching and launch; clearing them reverts. | not yet run | not yet run | not yet run |
+| 14 | Picking a different app resets those overrides; editing a checkbox never clears the selected app. | not yet run | not yet run | not yet run |
+| 15 | Kill the backend tool (e.g. rename `kdotool`) → press shows an alert and launches nothing. | not yet run | not yet run | not yet run |
+
+The plugin log (`~/.local/share/opendeck/logs/plugins/com.jfms7s.focuslauncher.sdPlugin.log`)
+records each press: the class searched, the matching window ids, the focused
+window and what was done, which is the evidence to note for each row.
 
 ## Development
 
 ```bash
-cargo test                                   # unit tests (no live desktop needed)
-cargo build --release --target <triple>
-node build.mjs <triple>                      # assembles dist/<uuid>.sdPlugin
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked                          # unit tests (no live desktop needed)
+node --test tests/                           # property inspector tests
+cargo build --release --locked               # or --target <triple>, once per CodePaths target
+node build.mjs                               # assembles dist/<uuid>.sdPlugin from every built target
 cp -r dist/com.jfms7s.focuslauncher.sdPlugin ~/.config/opendeck/plugins/
 # restart OpenDeck, then work through the smoke-test checklist above
 ```
+
+`cargo test --locked -- --ignored --nocapture` also runs a test that resolves
+every installed app's icon against your real icon theme and prints timings.
+
+The tests in `src/backend/` parse output captured from the real tools
+(`tests/fixtures/`). The Window Calls fixture follows the extension's own
+`List()` source, since no GNOME session was available to capture one.
+
+## Releasing
+
+1. Bump `version` in `Cargo.toml` and `Version` in `assets/manifest.json`
+   together (`node build.mjs --check-only` verifies they match).
+2. Push a `vX.Y.Z` tag. The release workflow checks the tag matches both
+   versions, runs fmt, clippy and the tests, builds both architectures, and
+   creates a **draft** release with the bundle and `SHA256SUMS` attached.
+3. Run the smoke-test checklist against that bundle, note the results in the
+   draft's notes, then publish it. Publishing makes it the latest release,
+   which is what the Ansible role installs.
 
 ## License
 

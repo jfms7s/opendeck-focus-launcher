@@ -1,11 +1,60 @@
+//! Pure decision logic: which behaviour a gesture asks for, and what to do
+//! with the app's windows. No I/O, so every branch is unit-tested.
+
 use crate::backend::WindowId;
+
+/// How a key or dial press ended. The protocol has no long-press event, so
+/// the adapter times `key_down`→`key_up` itself (see `is_hold`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Gesture {
+    Tap,
+    Hold,
+}
+
+/// What holding the key does, per key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoldAction {
+    SameAsTap,
+    CloseAll,
+}
+
+/// The behaviour a press asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Intent {
+    FocusOrLaunch,
+    CloseAll,
+}
+
+pub fn intent_for(gesture: Gesture, hold_action: HoldAction) -> Intent {
+    match (gesture, hold_action) {
+        (Gesture::Hold, HoldAction::CloseAll) => Intent::CloseAll,
+        _ => Intent::FocusOrLaunch,
+    }
+}
+
+/// How long a press must last to count as a hold.
+pub const HOLD_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(500);
+
+pub fn is_hold(elapsed: std::time::Duration, threshold: std::time::Duration) -> bool {
+    elapsed >= threshold
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Decision {
     Launch,
     Activate(WindowId),
     Minimize(WindowId),
+    CloseAll(Vec<WindowId>),
     NoOp,
+}
+
+/// The close-all behaviour: close every matching window, or nothing.
+pub fn decide_close_all(windows: &[WindowId]) -> Decision {
+    if windows.is_empty() {
+        Decision::NoOp
+    } else {
+        Decision::CloseAll(windows.to_vec())
+    }
 }
 
 pub fn decide(
@@ -42,7 +91,44 @@ mod tests {
     use super::*;
 
     fn id(s: &str) -> WindowId {
-        s.to_string()
+        WindowId::new(s)
+    }
+
+    #[test]
+    fn only_a_hold_with_close_all_configured_closes_windows() {
+        assert_eq!(
+            intent_for(Gesture::Tap, HoldAction::SameAsTap),
+            Intent::FocusOrLaunch
+        );
+        assert_eq!(
+            intent_for(Gesture::Tap, HoldAction::CloseAll),
+            Intent::FocusOrLaunch
+        );
+        assert_eq!(
+            intent_for(Gesture::Hold, HoldAction::SameAsTap),
+            Intent::FocusOrLaunch
+        );
+        assert_eq!(
+            intent_for(Gesture::Hold, HoldAction::CloseAll),
+            Intent::CloseAll
+        );
+    }
+
+    #[test]
+    fn is_hold_at_and_beyond_the_threshold_only() {
+        let ms = std::time::Duration::from_millis;
+        assert!(is_hold(ms(500), ms(500)));
+        assert!(is_hold(ms(800), ms(500)));
+        assert!(!is_hold(ms(200), ms(500)));
+    }
+
+    #[test]
+    fn close_all_closes_every_window_or_does_nothing() {
+        assert_eq!(decide_close_all(&[]), Decision::NoOp);
+        assert_eq!(
+            decide_close_all(&[id("w1"), id("w2")]),
+            Decision::CloseAll(vec![id("w1"), id("w2")])
+        );
     }
 
     #[test]

@@ -1,37 +1,90 @@
 name: Release
+# Pushing a vX.Y.Z tag builds and tests that commit, then creates a *draft*
+# GitHub release with the bundle and its SHA256SUMS attached. Publishing the
+# draft (by hand, after the README smoke-test checklist) is what makes it the
+# "latest" release that the Ansible role installs, so a release is never
+# visible without its asset.
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
+
+permissions: {}
 
 jobs:
-  build:
+  verify:
+    runs-on: ubuntu-24.04
     permissions:
-      contents: write
-    runs-on: ubuntu-latest
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Tag matches the Cargo and manifest versions
+        run: node build.mjs --check-only --expect-version "$GITHUB_REF_NAME"
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - name: Property inspector tests
+        run: node --test tests/
+
+  build:
+    needs: verify
+    runs-on: ubuntu-24.04
+    # Read-only: dependency build scripts run here, with no write token.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: 1.98.1
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
       - name: Install cross-compilation linker (aarch64)
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-      - run: cargo build --release --target x86_64-unknown-linux-gnu
-      - run: cargo build --release --target aarch64-unknown-linux-gnu
-      - uses: actions/setup-node@v4
+      - run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+      - run: cargo build --release --locked --target aarch64-unknown-linux-gnu
+      - name: Assemble the universal bundle (every CodePaths target, one manifest)
+        run: node build.mjs --all --zip --expect-version "$GITHUB_REF_NAME"
+      - name: Checksums
+        run: sha256sum ./*.streamDeckPlugin > SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          node-version: 20
-      - run: node build.mjs x86_64-unknown-linux-gnu
-      - name: Assemble a universal bundle (both architectures, one manifest)
-        run: |
-          cp target/aarch64-unknown-linux-gnu/release/opendeck-focus-launcher \
-             dist/com.jfms7s.focuslauncher.sdPlugin/opendeck-focus-launcher-aarch64-unknown-linux-gnu
-      - name: Zip the plugin bundle
-        run: |
-          cd dist
-          zip -r ../opendeck-focus-launcher.streamDeckPlugin com.jfms7s.focuslauncher.sdPlugin
-      - uses: softprops/action-gh-release@v2
+          name: release-assets
+          path: |
+            *.streamDeckPlugin
+            SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    # The only job with a write token. It runs no repository code.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          files: opendeck-focus-launcher.streamDeckPlugin
+          name: release-assets
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          draft: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            *.streamDeckPlugin
+            SHA256SUMS
