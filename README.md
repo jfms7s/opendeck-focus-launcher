@@ -110,7 +110,7 @@ window and what was done, which is the evidence to note for each row.
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked                          # unit tests (no live desktop needed)
-node --test tests/                           # property inspector tests
+node --test tests/*.test.mjs                 # property inspector tests
 cargo build --release --locked               # or --target <triple>, once per CodePaths target
 node build.mjs                               # assembles dist/<uuid>.sdPlugin from every built target
 cp -r dist/com.jfms7s.focuslauncher.sdPlugin ~/.config/opendeck/plugins/

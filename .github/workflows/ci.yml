@@ -26,7 +26,7 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
       - name: Property inspector tests
-        run: node --test tests/
+        run: node --test tests/*.test.mjs
       # Catches Cargo/manifest version drift, CodePaths and UUID mismatches
       # before a release does, not after.
       - name: Release build and bundle
