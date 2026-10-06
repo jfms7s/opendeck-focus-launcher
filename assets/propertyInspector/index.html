@@ -33,12 +33,12 @@
 			<div class="field">
 				<label for="icon_override">Icon name</label>
 				<input type="text" id="icon_override" placeholder="(auto, from the app)" />
-				<p class="hint">An icon theme name, or an absolute path to an image.</p>
+				<p class="hint">An icon theme name, or an absolute path to an image (on macOS: a PNG, SVG or <code>.icns</code> file).</p>
 			</div>
 			<div class="field">
 				<label for="class_override">Window class</label>
 				<input type="text" id="class_override" placeholder="(auto-detected)" />
-				<p class="hint">Matched exactly (ignoring case). Only needed if the app reports a different one.</p>
+				<p class="hint">Matched exactly (ignoring case); on macOS this is the bundle id (e.g. <code>com.apple.Safari</code>). Only needed if the app reports a different one.</p>
 			</div>
 		</section>
 
@@ -52,7 +52,7 @@
 			<div class="field">
 				<label for="custom_args">Extra arguments</label>
 				<input type="text" id="custom_args" placeholder="(none)" />
-				<p class="hint">Appended to the command, split the same way.</p>
+				<p class="hint">Appended to the command, split the same way (on macOS, passed to the app after <code>--args</code>).</p>
 			</div>
 		</section>
 	</main>
