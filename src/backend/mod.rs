@@ -1,10 +1,19 @@
 //! Window backends: one adapter per desktop, all behind `WindowBackend`.
 
 pub mod class;
+#[cfg(not(target_os = "macos"))]
 pub mod gnome;
+#[cfg(not(target_os = "macos"))]
 pub mod kdotool;
+// The macOS backend's platform-neutral half; tested everywhere.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub mod mac_ids;
+#[cfg(target_os = "macos")]
+pub mod macos;
+#[cfg(not(target_os = "macos"))]
 mod process;
 pub mod select;
+#[cfg(not(target_os = "macos"))]
 pub mod x11;
 
 use async_trait::async_trait;
@@ -105,7 +114,7 @@ pub trait WindowBackend: Send + Sync {
 
 /// Near-miss cases every backend's parser must reject, shared so the
 /// adapters are held to one rule. Each entry is (window class, wanted class).
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 pub(crate) const NEAR_MISSES: &[(&str, &str)] = &[
     ("firefox-esr", "firefox"),
     ("firefoxdeveloperedition", "firefox"),

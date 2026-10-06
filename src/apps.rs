@@ -4,7 +4,9 @@
 //! the Desktop Entry quoting rules, user-typed overrides with shell-style
 //! quoting only (no expansion), and the resulting argv is spawned directly.
 
+#[cfg(not(target_os = "macos"))]
 use freedesktop_desktop_entry::{DesktopEntry, Iter, default_paths};
+#[cfg(not(target_os = "macos"))]
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -27,6 +29,7 @@ pub struct AppEntry {
 /// The window class to search for: an explicit `StartupWMClass` if the entry
 /// declares one, else the desktop file's own id (the common fallback for
 /// entries that don't set `StartupWMClass`).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn resolve_window_class(entry_id: &str, startup_wm_class: Option<&str>) -> String {
     startup_wm_class
         .map(str::trim)
@@ -35,10 +38,21 @@ pub fn resolve_window_class(entry_id: &str, startup_wm_class: Option<&str>) -> S
         .to_string()
 }
 
+/// Installed `.app` bundles (see `bundle.rs`).
+#[cfg(target_os = "macos")]
+pub fn list_installed_apps() -> Vec<AppEntry> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    crate::bundle::list_apps_in(&crate::bundle::search_dirs(&home))
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn list_installed_apps() -> Vec<AppEntry> {
     list_installed_apps_from_paths(default_paths())
 }
 
+#[cfg(not(target_os = "macos"))]
 fn list_installed_apps_from_paths<I: IntoIterator<Item = PathBuf>>(paths: I) -> Vec<AppEntry> {
     let locales = freedesktop_desktop_entry::get_languages_from_env();
     // XDG data dirs can list the same app id twice (e.g. a Flatpak override
@@ -275,15 +289,39 @@ pub fn build_launch_argv(
     exec_override: Option<&str>,
     custom_args: Option<&str>,
 ) -> Result<Vec<String>, ExecError> {
-    let mut argv = match exec_override {
-        Some(cmd) => split_user_command(cmd)?,
-        None => parse_desktop_exec(&entry.exec, &ExecContext::for_entry(entry))?,
+    build_launch_argv_on(cfg!(target_os = "macos"), entry, exec_override, custom_args)
+}
+
+/// On macOS an app (no override) is opened by bundle id, `open -b <id>`,
+/// and its custom arguments go after `--args`; elsewhere the entry's
+/// `Exec=` line is used. An override runs as written on both.
+fn build_launch_argv_on(
+    macos: bool,
+    entry: &AppEntry,
+    exec_override: Option<&str>,
+    custom_args: Option<&str>,
+) -> Result<Vec<String>, ExecError> {
+    let (mut argv, extra_marker) = match exec_override {
+        Some(cmd) => (split_user_command(cmd)?, None),
+        None if macos && entry.id.trim().is_empty() => return Err(ExecError::Empty),
+        None if macos => (
+            vec!["open".to_string(), "-b".to_string(), entry.id.clone()],
+            Some("--args"),
+        ),
+        None => (
+            parse_desktop_exec(&entry.exec, &ExecContext::for_entry(entry))?,
+            None,
+        ),
     };
     if argv.is_empty() {
         return Err(ExecError::Empty);
     }
     if let Some(extra) = custom_args {
-        argv.extend(split_user_command(extra)?);
+        let extra = split_user_command(extra)?;
+        if !extra.is_empty() {
+            argv.extend(extra_marker.map(str::to_string));
+            argv.extend(extra);
+        }
     }
     Ok(argv)
 }
@@ -338,6 +376,66 @@ impl Launcher for SystemLauncher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bundle(id: &str) -> AppEntry {
+        AppEntry {
+            id: id.to_string(),
+            name: "Safari".to_string(),
+            window_class: id.to_string(),
+            exec: format!("open -b {id}"),
+            icon: None,
+            path: PathBuf::from("/Applications/Safari.app"),
+        }
+    }
+
+    #[test]
+    fn macos_launches_by_bundle_id() {
+        let argv = build_launch_argv_on(true, &bundle("com.apple.Safari"), None, None).unwrap();
+        assert_eq!(argv, ["open", "-b", "com.apple.Safari"]);
+    }
+
+    #[test]
+    fn macos_passes_custom_args_after_args() {
+        let argv = build_launch_argv_on(
+            true,
+            &bundle("com.apple.Safari"),
+            None,
+            Some("--private 'a b'"),
+        )
+        .unwrap();
+        assert_eq!(
+            argv,
+            [
+                "open",
+                "-b",
+                "com.apple.Safari",
+                "--args",
+                "--private",
+                "a b"
+            ]
+        );
+    }
+
+    #[test]
+    fn macos_needs_a_bundle_id() {
+        assert_eq!(
+            build_launch_argv_on(true, &bundle(" "), None, None),
+            Err(ExecError::Empty)
+        );
+    }
+
+    #[test]
+    fn macos_exec_override_runs_as_written() {
+        let argv = build_launch_argv_on(
+            true,
+            &bundle("x"),
+            Some("/usr/local/bin/tool --flag"),
+            Some("more"),
+        )
+        .unwrap();
+        assert_eq!(argv, ["/usr/local/bin/tool", "--flag", "more"]);
+    }
+    #[cfg(not(target_os = "macos"))]
     use std::io::Write;
 
     fn entry(exec: &str) -> AppEntry {
@@ -467,7 +565,8 @@ mod tests {
 
     #[test]
     fn exec_override_is_split_without_a_shell() {
-        let argv = build_launch_argv(
+        let argv = build_launch_argv_on(
+            false,
             &entry("ignored"),
             Some("firefox --private-window 'two words' $(id)"),
             None,
@@ -481,7 +580,8 @@ mod tests {
 
     #[test]
     fn custom_args_are_appended_as_separate_arguments() {
-        let argv = build_launch_argv(
+        let argv = build_launch_argv_on(
+            false,
             &entry("firefox %u"),
             None,
             Some("--new-window \"https://example.com/a b\"; reboot"),
@@ -500,18 +600,18 @@ mod tests {
 
     #[test]
     fn exec_override_drops_pasted_field_codes() {
-        let argv = build_launch_argv(&entry("x"), Some("firefox %u"), None).unwrap();
+        let argv = build_launch_argv_on(false, &entry("x"), Some("firefox %u"), None).unwrap();
         assert_eq!(argv, vec!["firefox"]);
     }
 
     #[test]
     fn bad_user_quoting_is_an_error_not_a_guess() {
         assert!(matches!(
-            build_launch_argv(&entry("x"), Some("firefox 'unterminated"), None),
+            build_launch_argv_on(false, &entry("x"), Some("firefox 'unterminated"), None),
             Err(ExecError::BadArguments(_))
         ));
         assert!(matches!(
-            build_launch_argv(&entry("x"), Some("   "), None),
+            build_launch_argv_on(false, &entry("x"), Some("   "), None),
             Err(ExecError::Empty)
         ));
     }
@@ -554,6 +654,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn discovers_a_fixture_desktop_entry() {
         let dir = tempfile::tempdir().unwrap();
@@ -575,6 +676,7 @@ mod tests {
         assert_eq!(apps[0].path, apps_dir.join("test-app.desktop"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn hides_nodisplay_entries() {
         let dir = tempfile::tempdir().unwrap();
@@ -591,6 +693,7 @@ mod tests {
         assert!(apps.is_empty());
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn hides_non_application_entries() {
         let dir = tempfile::tempdir().unwrap();
@@ -607,6 +710,7 @@ mod tests {
         assert!(apps.is_empty());
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn dedups_an_id_present_in_two_search_paths_keeping_the_first() {
         let user_dir = tempfile::tempdir().unwrap();

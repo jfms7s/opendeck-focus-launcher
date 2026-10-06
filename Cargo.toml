@@ -12,15 +12,28 @@ openaction = "2.7"
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "process", "sync"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-freedesktop-desktop-entry = "0.8"
 async-trait = "0.1"
 thiserror = "2"
-zbus = { version = "4", default-features = false, features = ["tokio"] }
 log = "0.4"
 simplelog = "0.12"
 base64 = "0.22"
-freedesktop-icons = "0.4"
 shell-words = "1.1"
+# Info.plist of macOS .app bundles (XML or binary); pure Rust, tested on Linux.
+plist = "1"
+
+# The freedesktop side: .desktop files, icon themes, GNOME over D-Bus.
+# (freedesktop-desktop-entry's default gettext feature builds GNU gettext
+# from source on macOS, so these stay off it.)
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+freedesktop-desktop-entry = "0.8"
+freedesktop-icons = "0.4"
+zbus = { version = "4", default-features = false, features = ["tokio"] }
+
+# macOS window control through the Accessibility API, and process lookup.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-application-services = { version = "0.3", default-features = false, features = ["std", "libc", "HIServices", "AXUIElement", "AXError"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString", "CFArray", "CFDictionary", "CFNumber"] }
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

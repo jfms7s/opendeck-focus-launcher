@@ -11,7 +11,9 @@ use base64::engine::general_purpose::STANDARD;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(not(target_os = "macos"))]
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 /// Largest icon file read. Real app icons are well under this; the cap
@@ -35,6 +37,10 @@ pub enum IconError {
     TooLarge(PathBuf),
     #[error("could not read {0}: {1}")]
     Read(PathBuf, std::io::Error),
+    /// macOS: `sips` could not turn an app's `.icns` into a PNG.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[error("could not convert {0} to PNG: {1}")]
+    Convert(PathBuf, String),
 }
 
 /// MIME type for the image formats `OpenDeck` can render, by extension.
@@ -76,6 +82,7 @@ pub fn build_image_payload(path: &Path) -> Result<String, IconError> {
     Ok(format!("data:{mime};base64,{}", STANDARD.encode(&bytes)))
 }
 
+#[cfg(not(target_os = "macos"))]
 /// Reads `[Icons] Theme=` from a kdeglobals file's contents.
 fn kde_icon_theme(kdeglobals: &str) -> Option<String> {
     let mut in_icons = false;
@@ -92,6 +99,7 @@ fn kde_icon_theme(kdeglobals: &str) -> Option<String> {
     None
 }
 
+#[cfg(not(target_os = "macos"))]
 fn gsettings_icon_theme() -> Option<String> {
     let output = std::process::Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "icon-theme"])
@@ -105,6 +113,7 @@ fn gsettings_icon_theme() -> Option<String> {
     (!theme.is_empty()).then(|| theme.to_string())
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The icon theme directory name to look icons up in: KDE's own setting,
 /// then the GNOME/GTK one (Plasma mirrors its theme there too), then
 /// `breeze` on Plasma, then `hicolor`. Never panics when a tool is missing.
@@ -126,6 +135,7 @@ fn detect_icon_theme() -> String {
     if on_kde { "breeze" } else { "hicolor" }.to_string()
 }
 
+#[cfg(not(target_os = "macos"))]
 fn icon_theme() -> &'static str {
     static THEME: OnceLock<String> = OnceLock::new();
     THEME.get_or_init(detect_icon_theme)
@@ -137,14 +147,89 @@ fn icon_theme() -> &'static str {
 fn resolve_icon_path(icon: &str) -> Result<PathBuf, IconError> {
     let as_path = Path::new(icon);
     if as_path.is_absolute() {
+        // macOS app icons are .icns, which a key can't show: convert.
+        #[cfg(target_os = "macos")]
+        if as_path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("icns"))
+        {
+            return icns_to_png(as_path);
+        }
         return Ok(as_path.to_path_buf());
     }
-    freedesktop_icons::lookup(icon)
+    #[cfg(not(target_os = "macos"))]
+    return freedesktop_icons::lookup(icon)
         .with_size(ICON_SIZE)
         .with_theme(icon_theme())
         .with_cache()
         .find()
-        .ok_or_else(|| IconError::NotFound(icon.to_string()))
+        .ok_or_else(|| IconError::NotFound(icon.to_string()));
+    #[cfg(target_os = "macos")]
+    Err(IconError::NotFound(icon.to_string()))
+}
+
+/// `sips` arguments turning an `.icns` into a PNG of the key size (`sips`
+/// ships with macOS).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn sips_argv(icns: &Path, png: &Path) -> Vec<std::ffi::OsString> {
+    let size = ICON_SIZE.to_string();
+    let mut argv: Vec<std::ffi::OsString> = ["-s", "format", "png", "-Z", size.as_str()]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    argv.extend([
+        icns.as_os_str().to_owned(),
+        "--out".into(),
+        png.as_os_str().to_owned(),
+    ]);
+    argv
+}
+
+/// Where the PNG for `icns` is cached: one file per source path. The hash
+/// only has to be stable on this machine; a different one just converts
+/// again.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn cached_png(cache_dir: &Path, icns: &Path) -> PathBuf {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    icns.hash(&mut h);
+    cache_dir.join(format!("{:016x}.png", h.finish()))
+}
+
+/// The cached PNG exists and is no older than its `.icns` (an app update
+/// replaces the icon).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn is_fresh(png: &Path, icns: &Path) -> bool {
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (modified(png), modified(icns)) {
+        (Some(png), Some(icns)) => png >= icns,
+        _ => false,
+    }
+}
+
+/// An app icon as a PNG: converted once with `sips`, then served from
+/// `~/Library/Caches/opendeck-focus-launcher/icons`.
+#[cfg(target_os = "macos")]
+fn icns_to_png(icns: &Path) -> Result<PathBuf, IconError> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let dir = home.join("Library/Caches/opendeck-focus-launcher/icons");
+    let png = cached_png(&dir, icns);
+    if is_fresh(&png, icns) {
+        return Ok(png);
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| IconError::Read(dir.clone(), e))?;
+    let output = std::process::Command::new("/usr/bin/sips")
+        .args(sips_argv(icns, &png))
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| IconError::Convert(icns.to_path_buf(), e.to_string()))?;
+    if !output.status.success() || !png.is_file() {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(IconError::Convert(icns.to_path_buf(), err));
+    }
+    Ok(png)
 }
 
 fn load_icon(icon: &str) -> Result<String, IconError> {
@@ -209,6 +294,69 @@ impl Default for IconCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sips_converts_to_a_144px_png() {
+        let argv = sips_argv(
+            Path::new("/A.app/Contents/Resources/AppIcon.icns"),
+            Path::new("/c/x.png"),
+        );
+        assert_eq!(
+            argv,
+            [
+                "-s",
+                "format",
+                "png",
+                "-Z",
+                "144",
+                "/A.app/Contents/Resources/AppIcon.icns",
+                "--out",
+                "/c/x.png",
+            ]
+            .map(std::ffi::OsString::from)
+        );
+    }
+
+    #[test]
+    fn each_icns_gets_its_own_stable_cache_file() {
+        let dir = Path::new("/cache");
+        let a = cached_png(dir, Path::new("/A.app/Contents/Resources/AppIcon.icns"));
+        let b = cached_png(dir, Path::new("/B.app/Contents/Resources/AppIcon.icns"));
+        assert_ne!(a, b);
+        assert_eq!(
+            a,
+            cached_png(dir, Path::new("/A.app/Contents/Resources/AppIcon.icns"))
+        );
+        assert_eq!(a.parent(), Some(dir));
+        assert_eq!(a.extension().and_then(|e| e.to_str()), Some("png"));
+    }
+
+    #[test]
+    fn a_cached_png_is_reused_until_the_icns_changes() {
+        use std::time::{Duration, SystemTime};
+        let tmp = tempfile::tempdir().unwrap();
+        let icns = tmp.path().join("a.icns");
+        let png = tmp.path().join("a.png");
+        std::fs::write(&icns, b"icns").unwrap();
+        assert!(!is_fresh(&png, &icns), "no png yet");
+        std::fs::write(&png, b"png").unwrap();
+        let t0 = SystemTime::now() - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&icns)
+            .unwrap()
+            .set_modified(t0)
+            .unwrap();
+        assert!(is_fresh(&png, &icns));
+        let later = SystemTime::now() + Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&icns)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert!(!is_fresh(&png, &icns), "the app was updated");
+    }
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -321,6 +469,7 @@ mod tests {
         assert!(matches!(result, Err(IconError::Read(_, _))));
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn reads_the_kde_icon_theme_setting() {
         let kdeglobals = "[General]\nTheme=ignored\n\n[Icons]\nTheme=breeze-dark\n";
@@ -367,7 +516,7 @@ mod tests {
 
 /// Run by hand with `cargo test -- --ignored --nocapture`: resolves every
 /// installed app's icon against the real icon theme and reports timings.
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 mod live_tests {
     use super::*;
 

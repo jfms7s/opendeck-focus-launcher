@@ -1,28 +1,47 @@
 //! Picks the window backend for the current desktop session.
 
-use super::{WindowBackend, gnome, kdotool, x11};
+use super::WindowBackend;
+#[cfg(not(target_os = "macos"))]
+use super::{gnome, kdotool, x11};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendKind {
+    #[cfg(not(target_os = "macos"))]
     Kdotool,
+    #[cfg(not(target_os = "macos"))]
     GnomeWindowCalls,
+    #[cfg(not(target_os = "macos"))]
     X11,
+    #[cfg(target_os = "macos")]
+    MacAccessibility,
 }
 
 impl BackendKind {
     pub fn name(self) -> &'static str {
         match self {
+            #[cfg(not(target_os = "macos"))]
             Self::Kdotool => "kdotool (KDE Plasma)",
+            #[cfg(not(target_os = "macos"))]
             Self::GnomeWindowCalls => "Window Calls (GNOME Shell)",
+            #[cfg(not(target_os = "macos"))]
             Self::X11 => "wmctrl/xdotool (X11)",
+            #[cfg(target_os = "macos")]
+            Self::MacAccessibility => "Accessibility (macOS)",
         }
     }
 
     pub fn build(self) -> Box<dyn WindowBackend> {
         match self {
+            #[cfg(not(target_os = "macos"))]
             Self::Kdotool => Box::new(kdotool::KdotoolBackend),
+            #[cfg(not(target_os = "macos"))]
             Self::GnomeWindowCalls => Box::new(gnome::GnomeWindowCallsBackend::new()),
+            #[cfg(not(target_os = "macos"))]
             Self::X11 => Box::new(x11::X11Backend),
+            #[cfg(target_os = "macos")]
+            Self::MacAccessibility => Box::new(std::sync::Arc::new(
+                super::macos::MacAccessibilityBackend::default(),
+            )),
         }
     }
 }
@@ -38,6 +57,7 @@ impl BackendKind {
 /// a duplicate. In that case no backend is chosen and each press alerts.
 /// A missing or non-`wayland` session type with `DISPLAY` set (for example
 /// `tty` under `startx`) is treated as X11.
+#[cfg(not(target_os = "macos"))]
 pub fn select_backend(
     current_desktop: Option<&str>,
     session_type: Option<&str>,
@@ -57,7 +77,17 @@ pub fn select_backend(
     None
 }
 
-#[cfg(test)]
+/// macOS has one window system: always the Accessibility backend.
+#[cfg(target_os = "macos")]
+pub fn select_backend(
+    _current_desktop: Option<&str>,
+    _session_type: Option<&str>,
+    _display: Option<&str>,
+) -> Option<BackendKind> {
+    Some(BackendKind::MacAccessibility)
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
 mod tests {
     use super::*;
 

@@ -4,12 +4,14 @@
 	"Version": "0.4.0",
 	"Category": "App Launcher",
 	"Icon": "icons/icon",
-	"OS": [{ "Platform": "linux" }],
+	"OS": [{ "Platform": "linux" }, { "Platform": "mac" }],
 	"CodePaths": {
 		"x86_64-unknown-linux-gnu": "opendeck-focus-launcher-x86_64-unknown-linux-gnu",
-		"aarch64-unknown-linux-gnu": "opendeck-focus-launcher-aarch64-unknown-linux-gnu"
+		"aarch64-unknown-linux-gnu": "opendeck-focus-launcher-aarch64-unknown-linux-gnu",
+		"aarch64-apple-darwin": "opendeck-focus-launcher-aarch64-apple-darwin"
 	},
 	"CodePathLin": "opendeck-focus-launcher-x86_64-unknown-linux-gnu",
+	"CodePathMac": "opendeck-focus-launcher-aarch64-apple-darwin",
 	"Actions": [
 		{
 			"UUID": "com.jfms7s.focuslauncher.focusorlaunch",
