@@ -1,6 +1,9 @@
 mod action;
 mod apps;
 mod backend;
+// macOS discovery; tested on every platform.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod bundle;
 mod catalog;
 mod decision;
 mod icon;

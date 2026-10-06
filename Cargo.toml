@@ -18,6 +18,8 @@ log = "0.4"
 simplelog = "0.12"
 base64 = "0.22"
 shell-words = "1.1"
+# Info.plist of macOS .app bundles (XML or binary); pure Rust, tested on Linux.
+plist = "1"
 
 # The freedesktop side: .desktop files, icon themes, GNOME over D-Bus.
 # (freedesktop-desktop-entry's default gettext feature builds GNU gettext

@@ -40,7 +40,10 @@ pub fn resolve_window_class(entry_id: &str, startup_wm_class: Option<&str>) -> S
 /// Installed `.app` bundles (see `bundle.rs`).
 #[cfg(target_os = "macos")]
 pub fn list_installed_apps() -> Vec<AppEntry> {
-    Vec::new()
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    crate::bundle::list_apps_in(&crate::bundle::search_dirs(&home))
 }
 
 #[cfg(not(target_os = "macos"))]
