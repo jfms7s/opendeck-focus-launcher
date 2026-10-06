@@ -72,8 +72,10 @@ const codePaths = manifest.CodePaths ?? fail("manifest.json has no CodePaths");
 for (const [triple, file] of Object.entries(codePaths)) {
 	if (file !== `${binName}-${triple}`) fail(`CodePaths["${triple}"] is ${file}, expected ${binName}-${triple}`);
 }
-if (manifest.CodePathLin && !Object.values(codePaths).includes(manifest.CodePathLin)) {
-	fail(`CodePathLin ${manifest.CodePathLin} is not one of the CodePaths binaries`);
+for (const key of ["CodePathLin", "CodePathMac"]) {
+	if (manifest[key] && !Object.values(codePaths).includes(manifest[key])) {
+		fail(`${key} ${manifest[key]} is not one of the CodePaths binaries`);
+	}
 }
 
 if (checkOnly) {
