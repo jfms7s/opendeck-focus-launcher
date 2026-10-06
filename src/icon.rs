@@ -11,7 +11,9 @@ use base64::engine::general_purpose::STANDARD;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(not(target_os = "macos"))]
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 /// Largest icon file read. Real app icons are well under this; the cap
@@ -76,6 +78,7 @@ pub fn build_image_payload(path: &Path) -> Result<String, IconError> {
     Ok(format!("data:{mime};base64,{}", STANDARD.encode(&bytes)))
 }
 
+#[cfg(not(target_os = "macos"))]
 /// Reads `[Icons] Theme=` from a kdeglobals file's contents.
 fn kde_icon_theme(kdeglobals: &str) -> Option<String> {
     let mut in_icons = false;
@@ -92,6 +95,7 @@ fn kde_icon_theme(kdeglobals: &str) -> Option<String> {
     None
 }
 
+#[cfg(not(target_os = "macos"))]
 fn gsettings_icon_theme() -> Option<String> {
     let output = std::process::Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "icon-theme"])
@@ -105,6 +109,7 @@ fn gsettings_icon_theme() -> Option<String> {
     (!theme.is_empty()).then(|| theme.to_string())
 }
 
+#[cfg(not(target_os = "macos"))]
 /// The icon theme directory name to look icons up in: KDE's own setting,
 /// then the GNOME/GTK one (Plasma mirrors its theme there too), then
 /// `breeze` on Plasma, then `hicolor`. Never panics when a tool is missing.
@@ -126,6 +131,7 @@ fn detect_icon_theme() -> String {
     if on_kde { "breeze" } else { "hicolor" }.to_string()
 }
 
+#[cfg(not(target_os = "macos"))]
 fn icon_theme() -> &'static str {
     static THEME: OnceLock<String> = OnceLock::new();
     THEME.get_or_init(detect_icon_theme)
@@ -139,12 +145,15 @@ fn resolve_icon_path(icon: &str) -> Result<PathBuf, IconError> {
     if as_path.is_absolute() {
         return Ok(as_path.to_path_buf());
     }
-    freedesktop_icons::lookup(icon)
+    #[cfg(not(target_os = "macos"))]
+    return freedesktop_icons::lookup(icon)
         .with_size(ICON_SIZE)
         .with_theme(icon_theme())
         .with_cache()
         .find()
-        .ok_or_else(|| IconError::NotFound(icon.to_string()))
+        .ok_or_else(|| IconError::NotFound(icon.to_string()));
+    #[cfg(target_os = "macos")]
+    Err(IconError::NotFound(icon.to_string()))
 }
 
 fn load_icon(icon: &str) -> Result<String, IconError> {
@@ -321,6 +330,7 @@ mod tests {
         assert!(matches!(result, Err(IconError::Read(_, _))));
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn reads_the_kde_icon_theme_setting() {
         let kdeglobals = "[General]\nTheme=ignored\n\n[Icons]\nTheme=breeze-dark\n";
@@ -367,7 +377,7 @@ mod tests {
 
 /// Run by hand with `cargo test -- --ignored --nocapture`: resolves every
 /// installed app's icon against the real icon theme and reports timings.
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 mod live_tests {
     use super::*;
 

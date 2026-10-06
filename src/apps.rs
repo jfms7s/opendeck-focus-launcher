@@ -4,7 +4,9 @@
 //! the Desktop Entry quoting rules, user-typed overrides with shell-style
 //! quoting only (no expansion), and the resulting argv is spawned directly.
 
+#[cfg(not(target_os = "macos"))]
 use freedesktop_desktop_entry::{DesktopEntry, Iter, default_paths};
+#[cfg(not(target_os = "macos"))]
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -35,10 +37,18 @@ pub fn resolve_window_class(entry_id: &str, startup_wm_class: Option<&str>) -> S
         .to_string()
 }
 
+/// Installed `.app` bundles (see `bundle.rs`).
+#[cfg(target_os = "macos")]
+pub fn list_installed_apps() -> Vec<AppEntry> {
+    Vec::new()
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn list_installed_apps() -> Vec<AppEntry> {
     list_installed_apps_from_paths(default_paths())
 }
 
+#[cfg(not(target_os = "macos"))]
 fn list_installed_apps_from_paths<I: IntoIterator<Item = PathBuf>>(paths: I) -> Vec<AppEntry> {
     let locales = freedesktop_desktop_entry::get_languages_from_env();
     // XDG data dirs can list the same app id twice (e.g. a Flatpak override
@@ -338,6 +348,7 @@ impl Launcher for SystemLauncher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_os = "macos"))]
     use std::io::Write;
 
     fn entry(exec: &str) -> AppEntry {
@@ -554,6 +565,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn discovers_a_fixture_desktop_entry() {
         let dir = tempfile::tempdir().unwrap();
@@ -575,6 +587,7 @@ mod tests {
         assert_eq!(apps[0].path, apps_dir.join("test-app.desktop"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn hides_nodisplay_entries() {
         let dir = tempfile::tempdir().unwrap();
@@ -591,6 +604,7 @@ mod tests {
         assert!(apps.is_empty());
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn hides_non_application_entries() {
         let dir = tempfile::tempdir().unwrap();
@@ -607,6 +621,7 @@ mod tests {
         assert!(apps.is_empty());
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn dedups_an_id_present_in_two_search_paths_keeping_the_first() {
         let user_dir = tempfile::tempdir().unwrap();

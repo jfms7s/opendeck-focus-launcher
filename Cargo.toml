@@ -12,15 +12,20 @@ openaction = "2.7"
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "process", "sync"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-freedesktop-desktop-entry = "0.8"
 async-trait = "0.1"
 thiserror = "2"
-zbus = { version = "4", default-features = false, features = ["tokio"] }
 log = "0.4"
 simplelog = "0.12"
 base64 = "0.22"
-freedesktop-icons = "0.4"
 shell-words = "1.1"
+
+# The freedesktop side: .desktop files, icon themes, GNOME over D-Bus.
+# (freedesktop-desktop-entry's default gettext feature builds GNU gettext
+# from source on macOS, so these stay off it.)
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+freedesktop-desktop-entry = "0.8"
+freedesktop-icons = "0.4"
+zbus = { version = "4", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 tempfile = "3"

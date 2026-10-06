@@ -1,10 +1,14 @@
 //! Window backends: one adapter per desktop, all behind `WindowBackend`.
 
 pub mod class;
+#[cfg(not(target_os = "macos"))]
 pub mod gnome;
+#[cfg(not(target_os = "macos"))]
 pub mod kdotool;
+#[cfg(not(target_os = "macos"))]
 mod process;
 pub mod select;
+#[cfg(not(target_os = "macos"))]
 pub mod x11;
 
 use async_trait::async_trait;
