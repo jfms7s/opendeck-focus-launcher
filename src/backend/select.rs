@@ -12,6 +12,8 @@ pub enum BackendKind {
     GnomeWindowCalls,
     #[cfg(not(target_os = "macos"))]
     X11,
+    #[cfg(target_os = "macos")]
+    MacAccessibility,
 }
 
 impl BackendKind {
@@ -23,6 +25,8 @@ impl BackendKind {
             Self::GnomeWindowCalls => "Window Calls (GNOME Shell)",
             #[cfg(not(target_os = "macos"))]
             Self::X11 => "wmctrl/xdotool (X11)",
+            #[cfg(target_os = "macos")]
+            Self::MacAccessibility => "Accessibility (macOS)",
         }
     }
 
@@ -34,6 +38,10 @@ impl BackendKind {
             Self::GnomeWindowCalls => Box::new(gnome::GnomeWindowCallsBackend::new()),
             #[cfg(not(target_os = "macos"))]
             Self::X11 => Box::new(x11::X11Backend),
+            #[cfg(target_os = "macos")]
+            Self::MacAccessibility => Box::new(std::sync::Arc::new(
+                super::macos::MacAccessibilityBackend::default(),
+            )),
         }
     }
 }
@@ -69,14 +77,14 @@ pub fn select_backend(
     None
 }
 
-/// macOS: no window backend yet.
+/// macOS has one window system: always the Accessibility backend.
 #[cfg(target_os = "macos")]
 pub fn select_backend(
     _current_desktop: Option<&str>,
     _session_type: Option<&str>,
     _display: Option<&str>,
 ) -> Option<BackendKind> {
-    None
+    Some(BackendKind::MacAccessibility)
 }
 
 #[cfg(all(test, not(target_os = "macos")))]

@@ -29,8 +29,8 @@ async fn main() -> OpenActionResult<()> {
     match kind {
         Some(kind) => log::info!("using the {} window backend", kind.name()),
         None => log::error!(
-            "no supported window backend for this desktop session (KDE Plasma, GNOME Shell \
-             or an X11 session are supported); Focus or Launch keys will alert and do nothing"
+            "no supported window backend for this desktop session (KDE Plasma, GNOME Shell, \
+             an X11 session or macOS are supported); Focus or Launch keys will alert and do nothing"
         ),
     }
 
