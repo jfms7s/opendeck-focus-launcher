@@ -83,7 +83,21 @@ fn perform(element: &AXUIElement, action: &'static str) -> Result<(), AXError> {
     }
 }
 
+/// Sets the AX messaging timeout for the whole process (what the
+/// system-wide element's timeout means), so window elements, buttons and
+/// everything else copied from an app are bounded too, not only the app
+/// elements given their own timeout. Done once, before any AX call.
+fn bound_every_ax_call() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: creating the system-wide element has no preconditions, and
+        // the timeout is a plain float.
+        unsafe { AXUIElement::new_system_wide().set_messaging_timeout(AX_TIMEOUT_SECS) };
+    });
+}
+
 fn app_element(pid: i32) -> CFRetained<AXUIElement> {
+    bound_every_ax_call();
     // SAFETY: creating an AX reference for a pid has no preconditions.
     let app = unsafe { AXUIElement::new_application(pid) };
     // SAFETY: `app` is a valid element; the timeout is a plain float.
@@ -225,12 +239,24 @@ fn find(id: &WindowId) -> Result<(CFRetained<AXUIElement>, CFRetained<AXUIElemen
     Ok((app, window))
 }
 
+/// Brings one window to the front, as a click on it would: un-minimise it,
+/// make it the app's main window (so the app activates on it, and cycling
+/// sees it as focused next time), un-hide the app, bring the app forward,
+/// then raise the window. Only bringing the app forward must succeed; the
+/// rest isn't supported by every window and is best effort.
 fn activate_blocking(id: &WindowId) -> Result<(), BackendError> {
     let (app, window) = find(id)?;
-    // Not every window can be un-minimised this way; raising still helps.
     let _ = set_bool(&window, "AXMinimized", false);
-    perform(&window, "AXRaise").map_err(|e| failed("raising the window", e))?;
-    set_bool(&app, "AXFrontmost", true).map_err(|e| failed("bringing the app forward", e))
+    let _ = set_bool(&window, "AXMain", true);
+    let _ = set_bool(&app, "AXHidden", false);
+    set_bool(&app, "AXFrontmost", true).map_err(|e| failed("bringing the app forward", e))?;
+    if let Err(e) = perform(&window, "AXRaise") {
+        log::warn!(
+            "window {id} could not be raised (AXError {}); its app is in front",
+            e.0
+        );
+    }
+    Ok(())
 }
 
 fn minimize_blocking(id: &WindowId) -> Result<(), BackendError> {
@@ -250,10 +276,9 @@ fn active_blocking() -> Result<Option<WindowId>, BackendError> {
     if !unsafe { AXIsProcessTrusted() } {
         return Ok(None);
     }
+    bound_every_ax_call();
     // SAFETY: creating the system-wide element has no preconditions.
     let system = unsafe { AXUIElement::new_system_wide() };
-    // SAFETY: `system` is a valid element.
-    unsafe { system.set_messaging_timeout(AX_TIMEOUT_SECS) };
     let Some(app) = copy_element(&system, "AXFocusedApplication") else {
         return Ok(None);
     };

@@ -122,6 +122,8 @@ and notes) in the release notes.
 | 15 | Kill the backend tool (e.g. rename `kdotool`) → press shows an alert and launches nothing. | not yet run | not yet run | not yet run | not yet run |
 | 16 | macOS without the Accessibility permission: a quit app launches; a running app alerts and the log names the System Settings path. | n/a | n/a | n/a | not yet run |
 | 17 | macOS: the app list shows bundles from /Applications and /System/Applications, and their icons render on the keys. | n/a | n/a | n/a | not yet run |
+| 18 | macOS: an app hidden with ⌘H → press shows it and focuses its window. | n/a | n/a | n/a | not yet run |
+| 19 | macOS: an app with 3 windows → repeated presses visit each window in turn (cycling doesn't get stuck on two). | n/a | n/a | n/a | not yet run |
 
 The plugin log (`~/.local/share/opendeck/logs/plugins/com.jfms7s.focuslauncher.sdPlugin.log`;
 on macOS `~/Library/Logs/opendeck/plugins/com.jfms7s.focuslauncher.sdPlugin.log`)
