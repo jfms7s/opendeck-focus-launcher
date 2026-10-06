@@ -302,3 +302,36 @@ impl WindowBackend for std::sync::Arc<MacAccessibilityBackend> {
         blocking(active_blocking).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// Runs on the macOS CI runner: an app with no running instance has no
+    /// windows, with or without the Accessibility permission (so a key
+    /// press launches it).
+    #[tokio::test]
+    async fn an_app_that_is_not_running_has_no_windows() {
+        let backend = Arc::new(MacAccessibilityBackend::default());
+        let class = WindowClass::parse("org.example.not-running").unwrap();
+        assert_eq!(backend.list_windows(&class).await, Ok(Vec::new()));
+    }
+
+    #[test]
+    fn running_processes_are_listed() {
+        let me = std::process::id() as i32;
+        assert!(processes().iter().any(|(pid, _)| *pid == me));
+    }
+
+    #[test]
+    fn the_system_apps_are_discovered() {
+        let apps = crate::apps::list_installed_apps();
+        assert!(
+            apps.iter()
+                .any(|a| a.id.eq_ignore_ascii_case("com.apple.calculator")),
+            "{} apps, no Calculator",
+            apps.len()
+        );
+    }
+}
