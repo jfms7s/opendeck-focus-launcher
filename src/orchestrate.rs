@@ -467,15 +467,18 @@ mod tests {
     #[tokio::test]
     async fn launches_when_no_window_is_open_without_a_shell() {
         let h = Harness::new(RecordingFakeBackend::default());
+        // The platform's own launch command: the entry's Exec= line, or
+        // `open -b <bundle id>` on macOS.
+        let argv: Vec<String> = if cfg!(target_os = "macos") {
+            ["open", "-b", "org.mozilla.firefox"]
+                .map(String::from)
+                .to_vec()
+        } else {
+            vec!["org.mozilla.firefox-binary".to_string()]
+        };
         let outcome = h.tap(&firefox(), &firefox_apps()).await;
-        assert_eq!(
-            outcome,
-            RunOutcome::Launched(vec!["org.mozilla.firefox-binary".to_string()])
-        );
-        assert_eq!(
-            h.launched(),
-            vec![vec!["org.mozilla.firefox-binary".to_string()]]
-        );
+        assert_eq!(outcome, RunOutcome::Launched(argv.clone()));
+        assert_eq!(h.launched(), vec![argv]);
         assert!(h.backend.activate_calls.lock().unwrap().is_empty());
     }
 
