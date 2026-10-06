@@ -29,6 +29,7 @@ pub struct AppEntry {
 /// The window class to search for: an explicit `StartupWMClass` if the entry
 /// declares one, else the desktop file's own id (the common fallback for
 /// entries that don't set `StartupWMClass`).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn resolve_window_class(entry_id: &str, startup_wm_class: Option<&str>) -> String {
     startup_wm_class
         .map(str::trim)

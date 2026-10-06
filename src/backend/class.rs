@@ -71,6 +71,7 @@ impl WindowClass {
     /// Every regex metacharacter is escaped. The allowlist in `parse` already
     /// rules out backticks, `$`, `{`, quotes and backslashes, so the result
     /// is also inert inside kdotool's generated `String.raw` template.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub fn anchored_regex(&self) -> String {
         let mut pattern = String::with_capacity(self.0.len() + 8);
         pattern.push('^');

@@ -29,6 +29,12 @@ freedesktop-desktop-entry = "0.8"
 freedesktop-icons = "0.4"
 zbus = { version = "4", default-features = false, features = ["tokio"] }
 
+# macOS window control through the Accessibility API, and process lookup.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-application-services = { version = "0.3", default-features = false, features = ["std", "libc", "HIServices", "AXUIElement", "AXError"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString", "CFArray", "CFDictionary", "CFNumber"] }
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
 

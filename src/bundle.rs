@@ -97,7 +97,7 @@ fn read_plist(path: &Path) -> Option<Dictionary> {
         .into_dictionary()
 }
 
-fn read_bundle(bundle: &Path) -> Option<AppEntry> {
+pub(crate) fn read_bundle(bundle: &Path) -> Option<AppEntry> {
     let dict = read_plist(&bundle.join("Contents/Info.plist"))?;
     // Menu-bar agents and background-only apps have no windows to focus
     // (the macOS counterpart of a .desktop file's NoDisplay).
