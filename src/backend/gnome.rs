@@ -2,8 +2,10 @@
 //! (`org.gnome.Shell.Extensions.Windows`) on the session bus.
 //!
 //! Uses zbus's async API on the plugin's own tokio runtime, with one session
-//! connection opened lazily and reused for every call.
+//! connection opened lazily and reused for every call. The connect and every
+//! method call are bounded by `process::CALL_TIMEOUT`.
 
+use super::process::{CALL_TIMEOUT, with_deadline};
 use super::{BackendError, WindowBackend, WindowClass, WindowId, WindowSnapshot};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -27,9 +29,18 @@ impl GnomeWindowCallsBackend {
     async fn connection(&self) -> Result<&zbus::Connection, BackendError> {
         self.connection
             .get_or_try_init(|| async {
-                zbus::Connection::session()
+                let connect = async {
+                    zbus::Connection::session()
+                        .await
+                        .map_err(|e| BackendError::Unavailable(format!("no session D-Bus: {e}")))
+                };
+                // A bus that never answers the handshake is as good as none.
+                with_deadline("session D-Bus connect", CALL_TIMEOUT, connect)
                     .await
-                    .map_err(|e| BackendError::Unavailable(format!("no session D-Bus: {e}")))
+                    .map_err(|e| match e {
+                        BackendError::CommandFailed(msg) => BackendError::Unavailable(msg),
+                        other => other,
+                    })
             })
             .await
     }
@@ -41,11 +52,16 @@ impl GnomeWindowCallsBackend {
     where
         B: serde::Serialize + zbus::zvariant::DynamicType,
     {
-        self.connection()
-            .await?
-            .call_method(Some(DESTINATION), PATH, Some(INTERFACE), method, body)
-            .await
-            .map_err(|e| classify_call_error(&e))
+        let connection = self.connection().await?;
+        // zbus 4 has no method-call timeout, so bound the call here: a Shell
+        // extension that never replies would otherwise stall every key.
+        with_deadline(&format!("Window Calls {method}"), CALL_TIMEOUT, async {
+            connection
+                .call_method(Some(DESTINATION), PATH, Some(INTERFACE), method, body)
+                .await
+                .map_err(|e| classify_call_error(&e))
+        })
+        .await
     }
 
     async fn list(&self) -> Result<Vec<GnomeWindow>, BackendError> {
