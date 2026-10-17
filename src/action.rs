@@ -5,7 +5,7 @@
 use crate::apps::{AppEntry, Launcher, SystemLauncher};
 use crate::backend::WindowBackend;
 use crate::catalog::AppCatalog;
-use crate::decision::{Gesture, HOLD_THRESHOLD, intent_for, is_hold};
+use crate::decision::{Gesture, HOLD_THRESHOLD, Intent, intent_for, is_hold};
 use crate::icon::IconCache;
 use crate::orchestrate::{self, Context, LaunchGuard, RunOutcome, Severity, report_for};
 use crate::settings::{FocusOrLaunchSettings, find_app, resolve_display_name, resolve_icon};
@@ -41,6 +41,25 @@ impl<'a> From<&'a AppEntry> for PiApp<'a> {
 #[derive(Debug, Serialize)]
 struct PiPayload<'a> {
     apps: Vec<PiApp<'a>>,
+}
+
+/// The intent a key or dial release asks for: a hold (pressed for at least
+/// `HOLD_THRESHOLD`) uses the key's hold setting, anything else is a tap. A
+/// release with no recorded press (e.g. the press predates the plugin) is a
+/// tap. Takes the settings so `press_released` has no decision of its own.
+fn release_intent(
+    pressed_at: Option<Instant>,
+    now: Instant,
+    settings: &FocusOrLaunchSettings,
+) -> Intent {
+    let gesture = if pressed_at
+        .is_some_and(|at| is_hold(now.saturating_duration_since(at), HOLD_THRESHOLD))
+    {
+        Gesture::Hold
+    } else {
+        Gesture::Tap
+    };
+    intent_for(gesture, settings.hold_action())
 }
 
 pub struct FocusOrLaunchAction {
@@ -141,19 +160,13 @@ impl FocusOrLaunchAction {
         instance: &Instance,
         settings: &FocusOrLaunchSettings,
     ) -> OpenActionResult<()> {
+        // Removed before the early return below, so the map keeps no stale
+        // entry when there is no backend.
         let pressed_at = self.pressed_at().remove(&instance.instance_id);
-        let gesture = if pressed_at.is_some_and(|at| is_hold(at.elapsed(), HOLD_THRESHOLD)) {
-            Gesture::Hold
-        } else {
-            Gesture::Tap
-        };
-        let intent = intent_for(gesture, settings.hold_action());
+        let intent = release_intent(pressed_at, Instant::now(), settings);
 
         let Some(backend) = self.backend.as_deref() else {
-            log::error!("no supported window backend for this desktop session; taking no action");
-            if let Err(e) = instance.show_alert().await {
-                log::warn!("could not show the alert on the key: {e}");
-            }
+            self.report(instance, &RunOutcome::NoBackend).await;
             return Ok(());
         };
         let apps = self.catalog.containing(settings.app_id()).await;
@@ -248,7 +261,90 @@ impl Action for FocusOrLaunchAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::test_support::app;
+    use crate::settings::test_support::{app, settings};
+    use std::time::Duration;
+
+    fn close_all_on_hold(enabled: bool) -> FocusOrLaunchSettings {
+        let mut s = settings("org.mozilla.firefox", true, true);
+        s.close_all_windows_on_hold = enabled;
+        s
+    }
+
+    #[test]
+    fn release_intent_tap_with_close_all_on_focuses_or_launches() {
+        let t0 = Instant::now();
+        assert_eq!(
+            release_intent(
+                Some(t0),
+                t0 + Duration::from_millis(10),
+                &close_all_on_hold(true)
+            ),
+            Intent::FocusOrLaunch
+        );
+    }
+
+    #[test]
+    fn release_intent_hold_with_close_all_on_closes_all() {
+        let t0 = Instant::now();
+        assert_eq!(
+            release_intent(Some(t0), t0 + HOLD_THRESHOLD * 2, &close_all_on_hold(true)),
+            Intent::CloseAll
+        );
+    }
+
+    #[test]
+    fn release_intent_tap_and_hold_with_close_all_off_focus_or_launch() {
+        let t0 = Instant::now();
+        let off = close_all_on_hold(false);
+        assert_eq!(
+            release_intent(Some(t0), t0 + Duration::from_millis(10), &off),
+            Intent::FocusOrLaunch
+        );
+        assert_eq!(
+            release_intent(Some(t0), t0 + HOLD_THRESHOLD * 2, &off),
+            Intent::FocusOrLaunch
+        );
+    }
+
+    #[test]
+    fn release_intent_without_a_recorded_press_is_a_tap() {
+        assert_eq!(
+            release_intent(None, Instant::now(), &close_all_on_hold(true)),
+            Intent::FocusOrLaunch
+        );
+    }
+
+    #[test]
+    fn release_intent_exactly_at_the_threshold_is_a_hold() {
+        let t0 = Instant::now();
+        assert_eq!(
+            release_intent(Some(t0), t0 + HOLD_THRESHOLD, &close_all_on_hold(true)),
+            Intent::CloseAll
+        );
+    }
+
+    #[test]
+    fn release_intent_just_under_the_threshold_is_a_tap() {
+        let t0 = Instant::now();
+        let later = t0 + HOLD_THRESHOLD - Duration::from_millis(1);
+        assert_eq!(
+            release_intent(Some(t0), later, &close_all_on_hold(true)),
+            Intent::FocusOrLaunch
+        );
+    }
+
+    #[test]
+    fn release_intent_with_a_clock_behind_the_press_is_a_tap() {
+        let t0 = Instant::now() + Duration::from_secs(1);
+        assert_eq!(
+            release_intent(
+                Some(t0),
+                t0 - Duration::from_millis(1),
+                &close_all_on_hold(true)
+            ),
+            Intent::FocusOrLaunch
+        );
+    }
 
     #[test]
     fn the_pi_apps_payload_includes_the_window_class() {

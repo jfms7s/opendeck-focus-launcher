@@ -31,6 +31,9 @@ pub enum RunOutcome {
     NoOp,
     ClosedAll(Vec<WindowId>),
     CloseFailed(Vec<(WindowId, String)>),
+    /// No window backend fits this desktop session (see `select_backend`),
+    /// so the press does nothing. Produced by the adapter, not by `run`.
+    NoBackend,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +120,11 @@ pub fn report_for(outcome: &RunOutcome) -> Report {
                     .collect::<Vec<_>>()
                     .join("; ")
             ),
+        ),
+        RunOutcome::NoBackend => (
+            Severity::Error,
+            true,
+            "no supported window backend for this desktop session; taking no action".to_string(),
         ),
     };
     Report {
@@ -775,6 +783,14 @@ mod tests {
     }
 
     #[test]
+    fn no_backend_keeps_its_log_line() {
+        assert_eq!(
+            report_for(&RunOutcome::NoBackend).message,
+            "no supported window backend for this desktop session; taking no action"
+        );
+    }
+
+    #[test]
     fn every_failure_alerts_and_no_success_does() {
         let failures = [
             RunOutcome::AppNotFound("a".into()),
@@ -785,6 +801,7 @@ mod tests {
             RunOutcome::ActivateFailed(id("w"), "x".into()),
             RunOutcome::MinimizeFailed(id("w"), "x".into()),
             RunOutcome::CloseFailed(vec![(id("w"), "x".into())]),
+            RunOutcome::NoBackend,
         ];
         for outcome in &failures {
             let report = report_for(outcome);
