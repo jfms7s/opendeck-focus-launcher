@@ -31,6 +31,9 @@ pub enum RunOutcome {
     NoOp,
     ClosedAll(Vec<WindowId>),
     CloseFailed(Vec<(WindowId, String)>),
+    /// No window backend fits this desktop session (see `select_backend`),
+    /// so the press does nothing. Produced by the adapter, not by `run`.
+    NoBackend,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,7 +62,7 @@ pub fn report_for(outcome: &RunOutcome) -> Report {
         RunOutcome::AppNotFound(id) => (
             Severity::Error,
             true,
-            format!("the app selected for this key ({id}) is not installed"),
+            format!("the app selected for this key ({id:?}) is not installed"),
         ),
         RunOutcome::InvalidClass(msg) => (
             Severity::Error,
@@ -81,7 +84,17 @@ pub fn report_for(outcome: &RunOutcome) -> Report {
             false,
             "app is still starting; not launching it again".to_string(),
         ),
-        RunOutcome::Launched(argv) => (Severity::Info, false, format!("launched {argv:?}")),
+        // Only the program and a count: the arguments can hold user-typed
+        // overrides (tokens, passwords), and the plugin log ends up in bug reports.
+        RunOutcome::Launched(argv) => (
+            Severity::Info,
+            false,
+            format!(
+                "launched {:?} with {} argument(s)",
+                argv.first().map(String::as_str).unwrap_or(""),
+                argv.len().saturating_sub(1)
+            ),
+        ),
         RunOutcome::LaunchFailed(msg) => (
             Severity::Error,
             true,
@@ -117,6 +130,11 @@ pub fn report_for(outcome: &RunOutcome) -> Report {
                     .collect::<Vec<_>>()
                     .join("; ")
             ),
+        ),
+        RunOutcome::NoBackend => (
+            Severity::Error,
+            true,
+            "no supported window backend for this desktop session; taking no action".to_string(),
         ),
     };
     Report {
@@ -775,6 +793,32 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_logs_the_program_and_argument_count_not_the_arguments() {
+        let message = report_for(&RunOutcome::Launched(vec![
+            "x".into(),
+            "--token=SECRET".into(),
+        ]))
+        .message;
+        assert!(!message.contains("SECRET"), "{message}");
+        assert!(message.contains("\"x\""), "{message}");
+        assert!(message.contains("1 argument"), "{message}");
+    }
+
+    #[test]
+    fn a_settings_app_id_cannot_forge_a_log_line() {
+        let message = report_for(&RunOutcome::AppNotFound("a\nb".into())).message;
+        assert!(!message.contains('\n'), "{message}");
+    }
+
+    #[test]
+    fn no_backend_keeps_its_log_line() {
+        assert_eq!(
+            report_for(&RunOutcome::NoBackend).message,
+            "no supported window backend for this desktop session; taking no action"
+        );
+    }
+
+    #[test]
     fn every_failure_alerts_and_no_success_does() {
         let failures = [
             RunOutcome::AppNotFound("a".into()),
@@ -785,6 +829,7 @@ mod tests {
             RunOutcome::ActivateFailed(id("w"), "x".into()),
             RunOutcome::MinimizeFailed(id("w"), "x".into()),
             RunOutcome::CloseFailed(vec![(id("w"), "x".into())]),
+            RunOutcome::NoBackend,
         ];
         for outcome in &failures {
             let report = report_for(outcome);

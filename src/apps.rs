@@ -95,6 +95,10 @@ pub enum ExecError {
     UnterminatedQuote,
     #[error("could not split the arguments: {0}")]
     BadArguments(String),
+    /// The first word is empty or looks like an option (`-…`), which
+    /// `flatpak-spawn --host` would parse as one of its own options.
+    #[error("the command must start with a program, not {0:?}")]
+    NotAProgram(String),
 }
 
 /// What the `%i`, `%c` and `%k` field codes expand to.
@@ -313,8 +317,12 @@ fn build_launch_argv_on(
             None,
         ),
     };
-    if argv.is_empty() {
-        return Err(ExecError::Empty);
+    match argv.first() {
+        None => return Err(ExecError::Empty),
+        Some(program) if program.is_empty() || program.starts_with('-') => {
+            return Err(ExecError::NotAProgram(program.clone()));
+        }
+        Some(_) => {}
     }
     if let Some(extra) = custom_args {
         let extra = split_user_command(extra)?;
@@ -355,7 +363,11 @@ impl Launcher for SystemLauncher {
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty argv"))?;
         let mut child = tokio::process::Command::new(program)
             .args(rest)
+            // The app's own output stays out of the plugin log, which may
+            // be shared in bug reports; a failing exit is still logged below.
             .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|e| std::io::Error::new(e.kind(), format!("{program}: {e}")))?;
         // Reap the child when it exits instead of leaving that to tokio's
@@ -614,6 +626,45 @@ mod tests {
             build_launch_argv_on(false, &entry("x"), Some("   "), None),
             Err(ExecError::Empty)
         ));
+    }
+
+    #[test]
+    fn an_override_starting_with_an_option_is_rejected() {
+        assert_eq!(
+            build_launch_argv_on(false, &entry("x"), Some("--env=X=1 foo"), None),
+            Err(ExecError::NotAProgram("--env=X=1".into()))
+        );
+        assert_eq!(
+            build_launch_argv_on(true, &bundle("x"), Some("-foo"), None),
+            Err(ExecError::NotAProgram("-foo".into()))
+        );
+    }
+
+    #[test]
+    fn an_override_starting_with_an_empty_word_is_rejected() {
+        assert_eq!(
+            build_launch_argv_on(false, &entry("x"), Some("'' foo"), None),
+            Err(ExecError::NotAProgram(String::new()))
+        );
+    }
+
+    #[test]
+    fn an_exec_line_starting_with_an_option_is_rejected() {
+        assert_eq!(
+            build_launch_argv_on(false, &entry("-foo --bar"), None, None),
+            Err(ExecError::NotAProgram("-foo".into()))
+        );
+        assert_eq!(
+            build_launch_argv_on(false, &entry("\"\" foo"), None, None),
+            Err(ExecError::NotAProgram(String::new()))
+        );
+    }
+
+    #[test]
+    fn custom_args_may_start_with_a_dash() {
+        let argv =
+            build_launch_argv_on(false, &entry("firefox"), None, Some("--new-window")).unwrap();
+        assert_eq!(argv, vec!["firefox", "--new-window"]);
     }
 
     #[test]
