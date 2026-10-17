@@ -32,7 +32,9 @@ new process, even when the app is already open.
 Other Wayland compositors (sway, Hyprland, niri, ...) are not supported: their
 native windows are invisible to `wmctrl`, so the plugin does not guess. If no
 backend fits, it logs why and every key press shows an alert instead of
-acting.
+acting. On Linux, a backend call (kdotool, Window Calls, wmctrl or xdotool)
+that hasn't answered within 3 seconds is cancelled and the key alerts, so one
+stuck tool can't freeze the other keys.
 
 A key matches windows whose class (or WM_CLASS instance name) is exactly the
 app's window class, ignoring case: `firefox` never matches `firefox-esr`.
@@ -124,6 +126,7 @@ and notes) in the release notes.
 | 17 | macOS: the app list shows bundles from /Applications and /System/Applications, and their icons render on the keys. | n/a | n/a | n/a | not yet run |
 | 18 | macOS: an app hidden with ⌘H → press shows it and focuses its window. | n/a | n/a | n/a | not yet run |
 | 19 | macOS: an app with 3 windows → repeated presses visit each window in turn (cycling doesn't get stuck on two). | n/a | n/a | n/a | not yet run |
+| 20 | Make the backend hang (a `kdotool`, or `wmctrl` on X11, first on the PATH that runs `sleep 30`) → press alerts after about 3 s and launches nothing; another key works right after. | not yet run | n/a | not yet run | n/a |
 
 The plugin log (`~/.local/share/opendeck/logs/plugins/com.jfms7s.focuslauncher.sdPlugin.log`;
 on macOS `~/Library/Logs/opendeck/plugins/com.jfms7s.focuslauncher.sdPlugin.log`)

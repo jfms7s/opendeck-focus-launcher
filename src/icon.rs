@@ -99,12 +99,54 @@ fn kde_icon_theme(kdeglobals: &str) -> Option<String> {
     None
 }
 
+/// How long `gsettings` may take. It runs inside the icon theme's
+/// `OnceLock` initialiser, so a hang would block every later icon lookup.
+#[cfg(not(target_os = "macos"))]
+const GSETTINGS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Runs `cmd` with stdout and stderr piped and returns its output, or `None`
+/// if it can't be spawned or hasn't exited within `limit` (it is then
+/// killed and reaped). Blocking: polls every 20 ms. Output is read only
+/// after exit, so this is for commands that print a line or two, not
+/// enough to fill a pipe buffer.
+#[cfg(not(target_os = "macos"))]
+fn output_within(
+    cmd: &mut std::process::Command,
+    limit: std::time::Duration,
+) -> Option<std::process::Output> {
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn gsettings_icon_theme() -> Option<String> {
-    let output = std::process::Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.interface", "icon-theme"])
-        .output()
-        .ok()?;
+    let output = output_within(
+        std::process::Command::new("gsettings").args([
+            "get",
+            "org.gnome.desktop.interface",
+            "icon-theme",
+        ]),
+        GSETTINGS_TIMEOUT,
+    )?;
     if !output.status.success() {
         return None;
     }
@@ -549,5 +591,48 @@ mod live_tests {
             println!("  {f}");
         }
         assert!(resolved > 0);
+    }
+}
+
+#[cfg(all(test, not(target_os = "macos")))]
+mod gsettings_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn output_within_kills_a_hung_child() {
+        let started = Instant::now();
+        let output = output_within(
+            std::process::Command::new("sleep").arg("30"),
+            Duration::from_millis(100),
+        );
+        assert!(output.is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn output_within_returns_a_prompt_childs_output() {
+        let output = output_within(
+            std::process::Command::new("sh").args(["-c", "echo \\'Breeze\\'"]),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"'Breeze'\n");
+    }
+
+    #[test]
+    fn output_within_is_none_for_a_missing_binary() {
+        assert!(
+            output_within(
+                &mut std::process::Command::new("opendeck-focus-launcher-no-such-tool"),
+                Duration::from_secs(5),
+            )
+            .is_none()
+        );
     }
 }
