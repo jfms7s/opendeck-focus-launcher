@@ -62,7 +62,7 @@ pub fn report_for(outcome: &RunOutcome) -> Report {
         RunOutcome::AppNotFound(id) => (
             Severity::Error,
             true,
-            format!("the app selected for this key ({id}) is not installed"),
+            format!("the app selected for this key ({id:?}) is not installed"),
         ),
         RunOutcome::InvalidClass(msg) => (
             Severity::Error,
@@ -84,7 +84,17 @@ pub fn report_for(outcome: &RunOutcome) -> Report {
             false,
             "app is still starting; not launching it again".to_string(),
         ),
-        RunOutcome::Launched(argv) => (Severity::Info, false, format!("launched {argv:?}")),
+        // Only the program and a count: the arguments can hold user-typed
+        // overrides (tokens, passwords), and the plugin log ends up in bug reports.
+        RunOutcome::Launched(argv) => (
+            Severity::Info,
+            false,
+            format!(
+                "launched {:?} with {} argument(s)",
+                argv.first().map(String::as_str).unwrap_or(""),
+                argv.len().saturating_sub(1)
+            ),
+        ),
         RunOutcome::LaunchFailed(msg) => (
             Severity::Error,
             true,
@@ -780,6 +790,24 @@ mod tests {
             )
             .await;
         assert_eq!(outcome, RunOutcome::ClosedAll(ids(&["w1"])));
+    }
+
+    #[test]
+    fn a_launch_logs_the_program_and_argument_count_not_the_arguments() {
+        let message = report_for(&RunOutcome::Launched(vec![
+            "x".into(),
+            "--token=SECRET".into(),
+        ]))
+        .message;
+        assert!(!message.contains("SECRET"), "{message}");
+        assert!(message.contains("\"x\""), "{message}");
+        assert!(message.contains("1 argument"), "{message}");
+    }
+
+    #[test]
+    fn a_settings_app_id_cannot_forge_a_log_line() {
+        let message = report_for(&RunOutcome::AppNotFound("a\nb".into())).message;
+        assert!(!message.contains('\n'), "{message}");
     }
 
     #[test]

@@ -117,7 +117,7 @@ impl FocusOrLaunchAction {
     ) -> OpenActionResult<()> {
         let Some(entry) = find_app(settings, apps) else {
             if let Some(id) = settings.app_id() {
-                log::warn!("the app selected for a key ({id}) is not installed");
+                log::warn!("the app selected for a key ({id:?}) is not installed");
             }
             return Ok(());
         };
