@@ -3,3 +3,4 @@
 *.sdPlugin.zip
 *.streamDeckPlugin
 SHA256SUMS
+.quality/
