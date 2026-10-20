@@ -1,0 +1,3 @@
+# Rust only: this repo has no JS source file, and its inline-HTML Property Inspector test would produce an
+# empty lcov that nulls all coverage once JS is detected.
+coverage_languages: [rust]
