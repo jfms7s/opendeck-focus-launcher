@@ -4,6 +4,7 @@
 use super::process::{check_status, run};
 use super::{BackendError, WindowBackend, WindowClass, WindowId};
 use async_trait::async_trait;
+use std::collections::HashMap;
 
 pub struct X11Backend;
 
@@ -63,6 +64,34 @@ fn parse_wmctrl_list(stdout: &str, class: &WindowClass) -> Vec<WindowId> {
         .collect()
 }
 
+/// Parses `wmctrl -l -x` output into each window's title: the rest of the
+/// line after the host column, keyed by canonical id. A line with no title
+/// gets `""`.
+fn parse_wmctrl_titles(stdout: &str) -> HashMap<WindowId, String> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let (id, _) = next_field(line)?;
+            let id = parse_hex_id(id)?;
+            let mut rest = line;
+            for _ in 0..4 {
+                rest = next_field(rest).map_or("", |(_, after)| after);
+            }
+            Some((canonical_id(id), rest.trim_start().to_string()))
+        })
+        .collect()
+}
+
+/// Splits off the first whitespace-separated field: `(field, rest)`.
+fn next_field(s: &str) -> Option<(&str, &str)> {
+    let s = s.trim_start();
+    if s.is_empty() {
+        return None;
+    }
+    let end = s.find(char::is_whitespace).unwrap_or(s.len());
+    Some((&s[..end], &s[end..]))
+}
+
 fn parse_hex_id(raw: &str) -> Option<u64> {
     u64::from_str_radix(raw.strip_prefix("0x")?, 16).ok()
 }
@@ -112,6 +141,18 @@ impl WindowBackend for X11Backend {
         let output = run("xdotool", &["getactivewindow"]).await?;
         check_status(&output, "xdotool getactivewindow")?;
         parse_xdotool_active_window(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    /// One more `wmctrl -l -x`; a window that has gone since gets `""`.
+    async fn window_titles(&self, ids: &[WindowId]) -> Result<Option<Vec<String>>, BackendError> {
+        let output = run("wmctrl", &["-l", "-x"]).await?;
+        check_status(&output, "wmctrl -l -x")?;
+        let mut titles = parse_wmctrl_titles(&String::from_utf8_lossy(&output.stdout));
+        Ok(Some(
+            ids.iter()
+                .map(|id| titles.remove(id).unwrap_or_default())
+                .collect(),
+        ))
     }
 }
 
@@ -198,6 +239,26 @@ mod tests {
             parse_wmctrl_list(stdout, &class("kate")),
             ids(&["0x03e00007"])
         );
+    }
+
+    #[test]
+    fn parses_titles_with_spaces_from_real_output() {
+        let titles = parse_wmctrl_titles(REAL_WMCTRL);
+        assert_eq!(titles.len(), 2);
+        assert_eq!(titles[&WindowId::new("0x01800004")], "Claude");
+        assert_eq!(
+            titles[&WindowId::new("0x01200008")],
+            "Wayland to X Recording bridge — Xwayland Video Bridge"
+        );
+    }
+
+    #[test]
+    fn title_ids_are_canonical_and_a_missing_title_is_empty() {
+        let stdout =
+            "0x3e00007  -1 kate.kate myhost\n0x01c00003  0 kate.kate myhost   two  spaces\n";
+        let titles = parse_wmctrl_titles(stdout);
+        assert_eq!(titles[&WindowId::new("0x03e00007")], "");
+        assert_eq!(titles[&WindowId::new("0x01c00003")], "two  spaces");
     }
 
     #[test]

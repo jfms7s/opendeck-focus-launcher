@@ -7,5 +7,6 @@
   "icon_override": null,
   "exec_override": null,
   "custom_args": "--new-window",
-  "close_all_windows_on_hold": true
+  "close_all_windows_on_hold": true,
+  "title_filter": "grafana"
 }

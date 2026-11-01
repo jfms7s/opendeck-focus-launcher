@@ -81,7 +81,7 @@ impl Default for GnomeWindowCallsBackend {
 }
 
 /// One entry of Window Calls' `List` reply. Field names follow the
-/// extension's `List()` (`wm_class`, `wm_class_instance`, `id`, `focus`,
+/// extension's `List()` (`wm_class`, `wm_class_instance`, `title`, `id`, `focus`,
 /// among others this plugin ignores). `wm_class`/`wm_class_instance` come
 /// from Mutter getters that can return `null`. `focus` is required: if it is
 /// missing the schema has changed, and silently assuming "not focused" would
@@ -92,6 +92,9 @@ struct GnomeWindow {
     wm_class: Option<String>,
     #[serde(default)]
     wm_class_instance: Option<String>,
+    /// Read only for keys with a title filter; missing or `null` is `""`.
+    #[serde(default)]
+    title: Option<String>,
     focus: bool,
 }
 
@@ -127,6 +130,18 @@ fn snapshot_from(all: &[GnomeWindow], class: &WindowClass) -> WindowSnapshot {
         .collect();
     let active = all.iter().find(|w| w.focus).map(GnomeWindow::window_id);
     WindowSnapshot { windows, active }
+}
+
+/// The title of each of `ids`, in order; `""` for a window not in `all`.
+fn titles_from(all: &[GnomeWindow], ids: &[WindowId]) -> Vec<String> {
+    ids.iter()
+        .map(|id| {
+            all.iter()
+                .find(|w| w.window_id() == *id)
+                .and_then(|w| w.title.clone())
+                .unwrap_or_default()
+        })
+        .collect()
 }
 
 fn parse_id(id: &WindowId) -> Result<u32, BackendError> {
@@ -187,6 +202,11 @@ impl WindowBackend for GnomeWindowCallsBackend {
             .map(GnomeWindow::window_id))
     }
 
+    /// One more `List` call.
+    async fn window_titles(&self, ids: &[WindowId]) -> Result<Option<Vec<String>>, BackendError> {
+        Ok(Some(titles_from(&self.list().await?, ids)))
+    }
+
     /// One `List` call answers both questions.
     async fn snapshot(&self, class: &WindowClass) -> Result<WindowSnapshot, BackendError> {
         Ok(snapshot_from(&self.list().await?, class))
@@ -221,6 +241,25 @@ mod tests {
         // Ids 1904 and 2210 are Firefox; 1983 is firefox-esr and must not
         // match. The reply lists 2210 before 1904 (stacking order).
         assert_eq!(snap.windows, ids(&["1904", "2210"]));
+    }
+
+    #[test]
+    fn reads_titles_in_the_order_asked_and_empty_for_a_gone_window() {
+        let all = parse_all(SAMPLE).unwrap();
+        assert_eq!(
+            titles_from(&all, &ids(&["1904", "2210", "9999", "1022"])),
+            vec!["Private Browsing", "Mozilla Firefox", "", ""]
+        );
+    }
+
+    #[test]
+    fn a_missing_or_null_title_is_empty() {
+        let all = parse_all(
+            r#"[{"id": 1, "wm_class": "a", "focus": false},
+                {"id": 2, "wm_class": "a", "title": null, "focus": false}]"#,
+        )
+        .unwrap();
+        assert_eq!(titles_from(&all, &ids(&["1", "2"])), vec!["", ""]);
     }
 
     #[test]

@@ -38,6 +38,14 @@ fn parse_search_output(stdout: &str) -> Vec<WindowId> {
         .collect()
 }
 
+/// Parses `kdotool getwindowname <id>`: the title followed by one newline.
+/// An id whose window has gone prints nothing (exit 0), read as `""`.
+/// Only the final newline is removed; the title's own spaces are kept.
+fn parse_window_name(stdout: &str) -> String {
+    let title = stdout.strip_suffix('\n').unwrap_or(stdout);
+    title.strip_suffix('\r').unwrap_or(title).to_string()
+}
+
 fn parse_single_id(stdout: &str) -> Option<WindowId> {
     let trimmed = stdout.trim();
     (!trimmed.is_empty()).then(|| WindowId::new(trimmed))
@@ -97,6 +105,21 @@ impl WindowBackend for KdotoolBackend {
         check_status(&output, "kdotool getactivewindow")?;
         Ok(parse_single_id(&String::from_utf8_lossy(&output.stdout)))
     }
+
+    /// One `kdotool getwindowname <id>` per window. Not chained after
+    /// `search`: separate runs need no line splitting, so a title with a
+    /// newline in it can't shift titles onto other windows. Only the fixed
+    /// subcommand and a kdotool-issued id are passed; user text (the title
+    /// filter) never reaches kdotool.
+    async fn window_titles(&self, ids: &[WindowId]) -> Result<Option<Vec<String>>, BackendError> {
+        let mut titles = Vec::with_capacity(ids.len());
+        for id in ids {
+            let output = run("kdotool", &["getwindowname", id.as_str()]).await?;
+            check_status(&output, "kdotool getwindowname")?;
+            titles.push(parse_window_name(&String::from_utf8_lossy(&output.stdout)));
+        }
+        Ok(Some(titles))
+    }
 }
 
 #[cfg(test)]
@@ -114,6 +137,14 @@ mod tests {
     // `kdotool getactivewindow`, exit 0.
     const GETACTIVEWINDOW: &str =
         include_str!("../../tests/fixtures/kdotool-getactivewindow.stdout");
+    // Captured from kdotool v0.2.3 on KDE Plasma 6 (Wayland):
+    // `kdotool getwindowname <id>` for a Konsole window, exit 0; the
+    // directory name in the title is redacted to `myproject`.
+    const GETWINDOWNAME: &str = include_str!("../../tests/fixtures/kdotool-getwindowname.stdout");
+    // `kdotool getwindowname '{00000000-0000-0000-0000-000000000000}'` (no such
+    // window): empty output, exit 0.
+    const GETWINDOWNAME_MISSING: &str =
+        include_str!("../../tests/fixtures/kdotool-getwindowname-missing.stdout");
 
     fn class(s: &str) -> WindowClass {
         WindowClass::parse(s).unwrap()
@@ -157,6 +188,25 @@ mod tests {
         assert_eq!(
             parse_single_id(GETACTIVEWINDOW),
             Some(WindowId::new("{cdbe9b36-5750-4d4a-8338-1479a28592da}"))
+        );
+    }
+
+    #[test]
+    fn parses_a_real_window_name() {
+        assert_eq!(parse_window_name(GETWINDOWNAME), "myproject : uv — Konsole");
+    }
+
+    #[test]
+    fn a_vanished_window_has_an_empty_name() {
+        assert_eq!(parse_window_name(GETWINDOWNAME_MISSING), "");
+    }
+
+    #[test]
+    fn only_the_final_newline_is_removed_from_a_name() {
+        assert_eq!(parse_window_name("  a  b \n"), "  a  b ");
+        assert_eq!(
+            parse_window_name("line one\nline two\r\n"),
+            "line one\nline two"
         );
     }
 

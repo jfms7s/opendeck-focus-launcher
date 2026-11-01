@@ -82,6 +82,10 @@ pub struct WindowSnapshot {
 ///   canonical `WindowId` form, so they compare equal with `==`.
 /// - **Errors:** a missing tool is `Unavailable`; "no windows match" is
 ///   `Ok(vec![])`, never an error.
+/// - **Titles:** `window_titles` returns one title per id, in the same
+///   order, `""` for a window that has gone; `Ok(None)` means the backend
+///   can't read titles at all. It is only called for keys with a title
+///   filter, so keys without one make no extra call.
 #[async_trait]
 pub trait WindowBackend: Send + Sync {
     async fn list_windows(&self, class: &WindowClass) -> Result<Vec<WindowId>, BackendError>;
@@ -89,6 +93,12 @@ pub trait WindowBackend: Send + Sync {
     async fn minimize(&self, id: &WindowId) -> Result<(), BackendError>;
     async fn close(&self, id: &WindowId) -> Result<(), BackendError>;
     async fn active_window(&self) -> Result<Option<WindowId>, BackendError>;
+
+    /// The titles of `ids` (see "Titles" above). The default is for a
+    /// backend that can't read them: the caller then ignores the filter.
+    async fn window_titles(&self, _ids: &[WindowId]) -> Result<Option<Vec<String>>, BackendError> {
+        Ok(None)
+    }
 
     /// Matching windows and the focused window. The default makes two
     /// queries; a backend whose tool returns both at once (Window Calls)
@@ -175,6 +185,18 @@ mod tests {
         let snap = backend.snapshot(&firefox()).await.unwrap();
         assert_eq!(snap.windows, vec![WindowId::new("w1")]);
         assert_eq!(snap.active, None);
+    }
+
+    #[tokio::test]
+    async fn the_default_backend_cannot_read_titles() {
+        let backend = OnlyLists {
+            windows: vec![],
+            active: Ok(None),
+        };
+        assert_eq!(
+            backend.window_titles(&[WindowId::new("w1")]).await,
+            Ok(None)
+        );
     }
 
     #[tokio::test]
