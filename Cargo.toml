@@ -22,10 +22,12 @@ shell-words = "1.1"
 plist = "1"
 
 # The freedesktop side: .desktop files, icon themes, GNOME over D-Bus.
-# (freedesktop-desktop-entry's default gettext feature builds GNU gettext
-# from source on macOS, so these stay off it.)
+# (Linux only: freedesktop-desktop-entry's gettext feature would build GNU
+# gettext from source on macOS. Its default gettext feature is off on Linux
+# too: it only applies Ubuntu's X-Ubuntu-Gettext-Domain name translations and
+# pulls in gettext-rs and the regex crates.)
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-freedesktop-desktop-entry = "0.8"
+freedesktop-desktop-entry = { version = "0.8", default-features = false }
 freedesktop-icons = "0.4"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 
