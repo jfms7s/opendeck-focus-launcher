@@ -803,7 +803,7 @@ dependencies = [
 
 [[package]]
 name = "opendeck-focus-launcher"
-version = "0.5.2"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
