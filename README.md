@@ -84,7 +84,9 @@ xattr -dr com.apple.quarantine ~/Library/Application\ Support/opendeck/plugins/c
      show instead of the app's own icon.
    - **Window class** — only needed if the app's windows report a different
      class than its `.desktop` file declares (letters, digits, spaces and
-     `. _ - +` only).
+     `. _ - +` only). On the X11 backend (wmctrl) a class can't contain
+     spaces, so a Steam game whose class is its name needs a `steam_app_<n>`
+     override.
    - **Window title contains** — only the app's windows whose title contains
      this text (ignoring case) belong to the key: a press focuses and cycles
      among those, holding (with close-all on) closes only those, and with none

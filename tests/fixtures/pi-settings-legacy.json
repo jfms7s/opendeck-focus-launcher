@@ -1,0 +1,10 @@
+{
+  "app": "plex-desktop_plex-desktop",
+  "class_override": "plex",
+  "cycle_windows": true,
+  "minimize_when_focused": true,
+  "name_override": null,
+  "icon_override": null,
+  "exec_override": null,
+  "custom_args": null
+}

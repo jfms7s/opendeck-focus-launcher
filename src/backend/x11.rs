@@ -48,6 +48,12 @@ fn wm_class_candidates(joined: &str) -> Vec<&str> {
 /// Parses `wmctrl -l -x` output, keeping the windows that match `class`.
 /// Each line is `<id> <desktop> <instance.class> <host> <title...>`. Lines
 /// come in `_NET_CLIENT_LIST` (mapping) order, which is stable.
+///
+/// The columns are split on whitespace and wmctrl doesn't quote them, so a
+/// `WM_CLASS` containing a space can't be told apart from the host column:
+/// a spaced wanted class never matches (`list_windows` doesn't even ask),
+/// and a known limitation is that a one-word class could match the first
+/// word of a window's spaced `WM_CLASS`.
 fn parse_wmctrl_list(stdout: &str, class: &WindowClass) -> Vec<WindowId> {
     stdout
         .lines()
@@ -114,6 +120,16 @@ fn parse_xdotool_active_window(stdout: &str) -> Result<Option<WindowId>, Backend
 #[async_trait]
 impl WindowBackend for X11Backend {
     async fn list_windows(&self, class: &WindowClass) -> Result<Vec<WindowId>, BackendError> {
+        if class.as_str().contains(' ') {
+            // Not an error: the key still launches the app, as it would
+            // after finding no window.
+            log::warn!(
+                "the X11 backend can't match a window class with spaces ({:?}); \
+                 set the key's Window class override (e.g. steam_app_<n> for a Steam game)",
+                class.as_str()
+            );
+            return Ok(Vec::new());
+        }
         let output = run("wmctrl", &["-l", "-x"]).await?;
         check_status(&output, "wmctrl -l -x")?;
         Ok(parse_wmctrl_list(
@@ -224,6 +240,22 @@ mod tests {
                 "{wanted} must not match {window_class}"
             );
         }
+    }
+
+    /// A synthetic line (not in the captured fixture): a window whose
+    /// `WM_CLASS` halves contain spaces, as a Steam game's can.
+    const SPACED_WM_CLASS_LINE: &str = "0x00000002  0 ELDEN RING.ELDEN RING  myhost Elden Ring\n";
+
+    #[test]
+    fn a_spaced_wanted_class_never_matches() {
+        assert!(parse_wmctrl_list(SPACED_WM_CLASS_LINE, &class("ELDEN RING")).is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_windows_skips_wmctrl_for_a_spaced_class() {
+        // Returns before running wmctrl, so this passes without it installed.
+        let windows = X11Backend.list_windows(&class("ELDEN RING")).await.unwrap();
+        assert!(windows.is_empty());
     }
 
     #[test]
