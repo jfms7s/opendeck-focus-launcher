@@ -298,8 +298,10 @@ mod tests {
     }
 }
 
-/// Checks the Rust settings struct, the PI's `FIELDS` table and a captured
-/// `setSettings` payload all agree on the same keys.
+/// Checks the Rust settings struct, the PI's `FIELDS` table and a
+/// hand-written `setSettings` payload (in the shape `sendSettings()` sends)
+/// all agree on the same keys, and that settings saved by an older PI still
+/// load.
 #[cfg(test)]
 mod pi_contract_tests {
     use super::*;
@@ -348,5 +350,21 @@ mod pi_contract_tests {
         assert_eq!(settings.custom_args.as_deref(), Some("--new-window"));
         assert_eq!(settings.title_filter(), Some("grafana"));
         assert_eq!(serde_json::to_value(&settings).unwrap(), value);
+    }
+
+    /// Hand-written in the eight-key shape an older PI saved (before
+    /// `close_all_windows_on_hold` and `title_filter` existed).
+    const LEGACY_PAYLOAD: &str = include_str!("../tests/fixtures/pi-settings-legacy.json");
+
+    #[test]
+    fn settings_saved_by_an_older_pi_still_load() {
+        let settings: FocusOrLaunchSettings = serde_json::from_str(LEGACY_PAYLOAD).unwrap();
+        assert_eq!(settings.app.as_deref(), Some("plex-desktop_plex-desktop"));
+        assert_eq!(settings.class_override.as_deref(), Some("plex"));
+        assert!(settings.cycle_windows);
+        assert!(settings.minimize_when_focused);
+        assert!(!settings.close_all_windows_on_hold);
+        assert_eq!(settings.hold_action(), HoldAction::SameAsTap);
+        assert_eq!(settings.title_filter(), None);
     }
 }
