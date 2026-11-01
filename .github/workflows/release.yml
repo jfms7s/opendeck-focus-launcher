@@ -1,11 +1,13 @@
 name: Release
 # Pushing a vX.Y.Z tag tests and audits that commit, builds it (the Linux
 # x86_64 binary on Ubuntu, the macOS one on a macOS runner, which also runs
-# the tests natively), then creates a *draft*
-# GitHub release with the bundle and its SHA256SUMS attached. Publishing the
-# draft (by hand, after the README smoke-test checklist) is what makes it the
-# "latest" release that the Ansible role installs, so a release is never
-# visible without its asset.
+# the tests natively), then creates a *draft* GitHub release with the bundle
+# and its SHA256SUMS attached. The draft's notes are the README's smoke-test
+# checklist, unticked (scripts/release-body.mjs). Publish it by hand only
+# after recording a result for every checklist item in those notes (passed,
+# failed, or not run and why): publishing is what makes it the "latest"
+# release that the Ansible role installs, and a release is never visible
+# without its asset.
 on:
   push:
     tags: ["v*"]
@@ -115,12 +117,17 @@ jobs:
           unzip -Z opendeck-focus-launcher.streamDeckPlugin | grep -E '^-rwx.*opendeck-focus-launcher-aarch64-apple-darwin$'
       - name: Checksums
         run: sha256sum ./*.streamDeckPlugin > SHA256SUMS
+      # After the bundle and checksums, so it is in neither; it only becomes
+      # the draft's notes.
+      - name: Write the draft's notes (the README smoke checklist, unticked)
+        run: node scripts/release-body.mjs > RELEASE_BODY.md
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-assets
           path: |
             *.streamDeckPlugin
             SHA256SUMS
+            RELEASE_BODY.md
           if-no-files-found: error
 
   publish:
@@ -136,6 +143,7 @@ jobs:
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           draft: true
+          body_path: RELEASE_BODY.md
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |

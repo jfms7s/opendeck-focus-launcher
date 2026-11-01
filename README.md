@@ -119,6 +119,13 @@ rows has a recorded run yet.** Run them against a live session before
 publishing a release draft, and record the result (date, version, OK / FAIL
 and notes) in the release notes.
 
+Each draft release starts with this table as an unticked checklist
+(`scripts/release-body.mjs`, from the markers around it). A release is
+published only once its notes record a result for every row: passed, failed,
+or not run and why. The maintainer keeps the full per-release smoke log
+outside this repository.
+
+<!-- smoke-checklist:start (scripts/release-body.mjs turns this table into each draft release's notes) -->
 | # | Check | KDE Plasma | GNOME Shell | X11 WM | macOS |
 |---|---|---|---|---|---|
 | 1 | App with no window open → press launches it once. | not yet run | not yet run | not yet run | not yet run |
@@ -142,6 +149,7 @@ and notes) in the release notes.
 | 19 | macOS: an app with 3 windows → repeated presses visit each window in turn (cycling doesn't get stuck on two). | n/a | n/a | n/a | not yet run |
 | 20 | Make the backend hang (a `kdotool`, or `wmctrl` on X11, first on the PATH that runs `sleep 30`) → press alerts after about 3 s and launches nothing; another key works right after. | not yet run | n/a | not yet run | n/a |
 | 21 | Two windows of one app with different titles, a key with "Window title contains" set to text in one title → press focuses only that window; change the filter to text in neither title → press launches (with its Extra arguments). | not yet run | not yet run | not yet run | n/a |
+<!-- smoke-checklist:end -->
 
 The plugin log (`~/.local/share/opendeck/logs/plugins/com.jfms7s.focuslauncher.sdPlugin.log`;
 on macOS `~/Library/Logs/opendeck/plugins/com.jfms7s.focuslauncher.sdPlugin.log`)
@@ -181,10 +189,13 @@ request, every Monday (`audit.yml`) and before every release draft.
    versions, runs fmt, clippy, the tests and `cargo audit`, builds the Linux
    x86_64 binary and the macOS one (on a macOS runner, after running the tests
    there too), and
-   creates a **draft** release with the bundle and `SHA256SUMS` attached.
-3. Run the smoke-test checklist against that bundle, note the results in the
-   draft's notes, then publish it. Publishing makes it the latest release,
-   which is what the Ansible role installs.
+   creates a **draft** release with the bundle and `SHA256SUMS` attached. The
+   draft's notes are the smoke-test checklist, unticked, plus GitHub's
+   generated change list.
+3. Run the smoke-test checklist against that bundle and record it in the
+   draft's notes: tick what passed, mark the rest "fail" or "not run" with
+   why, and fill in the smoke log line. Then publish it. Publishing makes it
+   the latest release, which is what the Ansible role installs.
 
 ## License
 
