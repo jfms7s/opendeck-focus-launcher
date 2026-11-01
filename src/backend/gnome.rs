@@ -53,8 +53,9 @@ impl GnomeWindowCallsBackend {
         B: serde::Serialize + zbus::zvariant::DynamicType,
     {
         let connection = self.connection().await?;
-        // zbus 4 has no method-call timeout, so bound the call here: a Shell
-        // extension that never replies would otherwise stall every key.
+        // The session connection is shared and built without a method
+        // timeout, so bound each call here: a Shell extension that never
+        // replies would otherwise stall every key.
         with_deadline(&format!("Window Calls {method}"), CALL_TIMEOUT, async {
             connection
                 .call_method(Some(DESTINATION), PATH, Some(INTERFACE), method, body)
