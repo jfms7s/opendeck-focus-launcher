@@ -1,0 +1,40 @@
+name: PR verification
+# Fails a pull request whose body has no filled-in "## Verification" section
+# (.github/pull_request_template.md). `gh pr create --body` skips the
+# template, so this is the check that the record exists. Dependabot PRs are
+# exempt. Not a required check unless the owner adds it to the ruleset.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+jobs:
+  pr-verification:
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - name: The body has a filled-in Verification section
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        # HTML comments (the template's example) don't count; at least one
+        # non-blank line must follow the heading before the next "## ".
+        run: |
+          node -e '
+            const body = (process.env.BODY ?? "").replace(/<!--[\s\S]*?-->/g, "");
+            const lines = body.split(/\r?\n/);
+            const start = lines.findIndex((l) => /^##\s+Verification\s*$/.test(l.trim()));
+            if (start === -1) {
+              console.error("The PR body has no \"## Verification\" section (see .github/pull_request_template.md).");
+              process.exit(1);
+            }
+            const rest = lines.slice(start + 1);
+            const end = rest.findIndex((l) => /^##\s/.test(l));
+            const section = end === -1 ? rest : rest.slice(0, end);
+            if (!section.some((l) => l.trim() !== "")) {
+              console.error("The \"## Verification\" section is empty: say what you ran and what you saw.");
+              process.exit(1);
+            }
+            console.log("The Verification section is filled in.");
+          '

@@ -1,6 +1,7 @@
 name: Release
-# Pushing a vX.Y.Z tag builds and tests that commit (Linux binaries on
-# Ubuntu, the macOS one on a macOS runner), then creates a *draft*
+# Pushing a vX.Y.Z tag tests and audits that commit, builds it (the Linux
+# x86_64 binary on Ubuntu, the macOS one on a macOS runner, which also runs
+# the tests natively), then creates a *draft*
 # GitHub release with the bundle and its SHA256SUMS attached. Publishing the
 # draft (by hand, after the README smoke-test checklist) is what makes it the
 # "latest" release that the Ansible role installs, so a release is never
@@ -34,6 +35,10 @@ jobs:
       - run: cargo test --locked
       - name: Property inspector tests
         run: node --test tests/*.test.mjs
+      # A tag can point at a commit that never ran CI: no draft from a
+      # lockfile with a known advisory.
+      - run: cargo install cargo-audit --locked --version 0.22.2
+      - run: cargo audit
 
   build-macos:
     # Native Apple Silicon build. Read-only, like `build`.
@@ -49,6 +54,9 @@ jobs:
         with:
           toolchain: 1.98.1
           targets: aarch64-apple-darwin
+      # The macOS-only code is tested natively here: the tag's commit may
+      # never have passed CI's `macos` job.
+      - run: cargo test --locked
       - run: cargo build --release --locked --target aarch64-apple-darwin
       - name: Check it is a signed arm64 binary that starts
         run: |

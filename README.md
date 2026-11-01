@@ -163,13 +163,19 @@ The tests in `src/backend/` parse output captured from the real tools
 (`tests/fixtures/`). The Window Calls fixture follows the extension's own
 `List()` source, since no GNOME session was available to capture one.
 
+A pull request's description needs a filled-in `## Verification` section (what
+you ran and what you saw, as in `.github/pull_request_template.md`); the
+`pr-verification` check fails without one. `cargo audit` runs on every pull
+request, every Monday (`audit.yml`) and before every release draft.
+
 ## Releasing
 
 1. Bump `version` in `Cargo.toml` and `Version` in `assets/manifest.json`
    together (`node build.mjs --check-only` verifies they match).
 2. Push a `vX.Y.Z` tag. The release workflow checks the tag matches both
-   versions, runs fmt, clippy and the tests, builds the Linux x86_64 binary
-   and the macOS one (on a macOS runner), and
+   versions, runs fmt, clippy, the tests and `cargo audit`, builds the Linux
+   x86_64 binary and the macOS one (on a macOS runner, after running the tests
+   there too), and
    creates a **draft** release with the bundle and `SHA256SUMS` attached.
 3. Run the smoke-test checklist against that bundle, note the results in the
    draft's notes, then publish it. Publishing makes it the latest release,
