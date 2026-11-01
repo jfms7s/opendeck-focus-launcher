@@ -41,6 +41,9 @@ pub enum IconError {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     #[error("could not convert {0} to PNG: {1}")]
     Convert(PathBuf, String),
+    /// The blocking lookup task panicked or was cancelled.
+    #[error("the icon lookup task failed: {0}")]
+    Task(String),
 }
 
 /// MIME type for the image formats `OpenDeck` can render, by extension.
@@ -308,7 +311,7 @@ impl IconCache {
         let name = icon.to_string();
         let result = tokio::task::spawn_blocking(move || loader(&name))
             .await
-            .unwrap_or_else(|e| Err(IconError::NotFound(format!("icon lookup task failed: {e}"))));
+            .unwrap_or_else(|e| Err(IconError::Task(e.to_string())));
         let value = match result {
             Ok(uri) => Some(Arc::<str>::from(uri)),
             Err(e) => {
@@ -318,6 +321,12 @@ impl IconCache {
         };
         self.lock().insert(icon.to_string(), value.clone());
         value
+    }
+
+    /// Forgets every cached result, hits and misses, so the next lookup of
+    /// each icon resolves it again.
+    pub fn forget_all(&self) {
+        self.lock().clear();
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Option<Arc<str>>>> {
@@ -553,6 +562,34 @@ mod tests {
         assert_eq!(cache.data_uri("missing").await, None);
         assert_eq!(cache.data_uri("missing").await, None);
         assert_eq!(LOADS.load(Ordering::SeqCst) - before, 2);
+    }
+
+    // Its own counter: LOADS is asserted by exact delta in the test above,
+    // which runs in parallel with this one.
+    static FORGET_LOADS: AtomicUsize = AtomicUsize::new(0);
+
+    fn always_missing_loader(icon: &str) -> Result<String, IconError> {
+        FORGET_LOADS.fetch_add(1, Ordering::SeqCst);
+        Err(IconError::NotFound(icon.to_string()))
+    }
+
+    #[tokio::test]
+    async fn forget_all_lets_a_miss_be_looked_up_again() {
+        let cache = IconCache::with_loader(always_missing_loader);
+        assert_eq!(cache.data_uri("missing").await, None);
+        assert_eq!(cache.data_uri("missing").await, None);
+        assert_eq!(FORGET_LOADS.load(Ordering::SeqCst), 1);
+        cache.forget_all();
+        assert_eq!(cache.data_uri("missing").await, None);
+        assert_eq!(FORGET_LOADS.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_failed_lookup_task_says_so() {
+        assert_eq!(
+            IconError::Task("panicked".to_string()).to_string(),
+            "the icon lookup task failed: panicked"
+        );
     }
 }
 
