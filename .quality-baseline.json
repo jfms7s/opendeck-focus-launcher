@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "recorded_at": "2026-11-01T17:47:06Z",
+  "commit": "c8dada19d5864b0764da53952b0715fb0a8fe48e",
+  "duplication_percent": 0.35,
+  "dead_code_total": 0,
+  "complexity_threshold": 10,
+  "functions_over_threshold": 1,
+  "cognitive_threshold": 15,
+  "cognitive_over_threshold": 0,
+  "coverage_lines_percent": 78.16
+}
