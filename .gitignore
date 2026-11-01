@@ -4,3 +4,4 @@
 *.streamDeckPlugin
 SHA256SUMS
 .quality/
+.worktrees/
