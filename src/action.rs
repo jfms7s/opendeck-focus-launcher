@@ -107,31 +107,35 @@ impl FocusOrLaunchAction {
     }
 
     /// Sets the key's title and image from the selected app plus overrides.
-    /// A missing icon is logged (once, by the cache) and skipped: a key with
-    /// no icon is still usable.
+    /// Whatever can't be shown falls back to OpenDeck's default (the
+    /// manifest's image, no title), so a key never keeps the face of the app
+    /// it showed before. A failed icon lookup is logged once, by the cache.
     async fn apply_visuals(
         &self,
         instance: &Instance,
         settings: &FocusOrLaunchSettings,
         apps: &[AppEntry],
     ) -> OpenActionResult<()> {
-        let Some(entry) = find_app(settings, apps) else {
-            if let Some(id) = settings.app_id() {
-                log::warn!("the app selected for a key ({id:?}) is not installed");
-            }
-            return Ok(());
-        };
-        instance
-            .set_title(Some(resolve_display_name(settings, entry)), None)
-            .await?;
-        if let Some(icon) = resolve_icon(settings, entry) {
-            if let Some(uri) = self.icons.data_uri(icon).await {
-                instance.set_image(Some(uri.as_ref()), None).await?;
-            }
-        } else {
-            log::warn!("{} has no icon", entry.id);
+        let face = key_face(settings, apps);
+        if face.title.is_none()
+            && let Some(id) = settings.app_id()
+        {
+            log::warn!("the app selected for a key ({id:?}) is not installed");
         }
-        Ok(())
+        instance.set_title(face.title, None).await?;
+        let uri = match face.icon {
+            Some(icon) => self.icons.data_uri(icon).await,
+            None => {
+                if let Some(entry) = find_app(settings, apps) {
+                    log::debug!("{} has no icon", entry.id);
+                }
+                None
+            }
+        };
+        match uri {
+            Some(uri) => instance.set_image(Some(uri.as_ref()), None).await,
+            None => instance.set_image(None::<String>, None).await,
+        }
     }
 
     async fn report(&self, instance: &Instance, outcome: &RunOutcome) {
@@ -214,6 +218,9 @@ impl Action for FocusOrLaunchAction {
         settings: &Self::Settings,
     ) -> OpenActionResult<()> {
         let apps = self.catalog.refresh().await;
+        // Opening the PI is the "rescan" moment: an icon that failed before
+        // (a theme installed since, a path created since) gets another try.
+        self.icons.forget_all();
         self.send_apps_to_pi(instance, &apps).await?;
         self.apply_visuals(instance, settings, &apps).await
     }
@@ -258,10 +265,89 @@ impl Action for FocusOrLaunchAction {
     }
 }
 
+/// What a key shows: `None` means OpenDeck's default for that part.
+#[derive(Debug, PartialEq, Eq)]
+struct KeyFace<'a> {
+    title: Option<&'a str>,
+    icon: Option<&'a str>,
+}
+
+/// The key's title and icon for `settings`: both `None` when the selected app
+/// isn't installed (or none is selected), else the resolved name and the
+/// resolved `Icon=` value, if any.
+fn key_face<'a>(settings: &'a FocusOrLaunchSettings, apps: &'a [AppEntry]) -> KeyFace<'a> {
+    match find_app(settings, apps) {
+        None => KeyFace {
+            title: None,
+            icon: None,
+        },
+        Some(entry) => KeyFace {
+            title: Some(resolve_display_name(settings, entry)),
+            icon: resolve_icon(settings, entry),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::settings::test_support::{app, settings};
+
+    #[test]
+    fn key_face_shows_the_installed_apps_name_and_icon() {
+        let s = settings("org.mozilla.firefox", true, true);
+        let apps = [app("org.mozilla.firefox", "firefox")];
+        assert_eq!(
+            key_face(&s, &apps),
+            KeyFace {
+                title: Some("org.mozilla.firefox"),
+                icon: Some("org.mozilla.firefox-icon"),
+            }
+        );
+    }
+
+    #[test]
+    fn key_face_has_no_icon_when_the_app_declares_none() {
+        let s = settings("org.mozilla.firefox", true, true);
+        let mut entry = app("org.mozilla.firefox", "firefox");
+        entry.icon = None;
+        let apps = [entry];
+        assert_eq!(
+            key_face(&s, &apps),
+            KeyFace {
+                title: Some("org.mozilla.firefox"),
+                icon: None,
+            }
+        );
+    }
+
+    #[test]
+    fn key_face_uses_the_icon_override() {
+        let mut s = settings("org.mozilla.firefox", true, true);
+        s.icon_override = Some("/opt/icons/browser.png".to_string());
+        let apps = [app("org.mozilla.firefox", "firefox")];
+        assert_eq!(key_face(&s, &apps).icon, Some("/opt/icons/browser.png"));
+    }
+
+    #[test]
+    fn key_face_is_empty_when_the_app_is_not_installed() {
+        let s = settings("org.mozilla.firefox", true, true);
+        let apps = [app("org.kde.kate", "kate")];
+        assert_eq!(
+            key_face(&s, &apps),
+            KeyFace {
+                title: None,
+                icon: None,
+            }
+        );
+        assert_eq!(
+            key_face(&FocusOrLaunchSettings::default(), &apps),
+            KeyFace {
+                title: None,
+                icon: None,
+            }
+        );
+    }
     use std::time::Duration;
 
     fn close_all_on_hold(enabled: bool) -> FocusOrLaunchSettings {
