@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 OpenDeck plugin (`com.jfms7s.focuslauncher`, Rust on the `openaction` crate; Linux
-x86_64/aarch64 and Apple Silicon macOS) with one action, "Focus or Launch": a key that
+x86_64 and Apple Silicon macOS) with one action, "Focus or Launch": a key that
 focuses an app's window, cycles through its windows, or launches it. Design docs,
 plans, reviews and issue write-ups live in the Obsidian vault at
 `~/git/obsidian-vault/personal/projects/opendeck-focus-launcher/`, not in this repo.
