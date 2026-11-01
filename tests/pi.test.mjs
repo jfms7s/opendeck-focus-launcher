@@ -70,6 +70,7 @@ async function openInspector(settings) {
 		"class_override",
 		"exec_override",
 		"custom_args",
+		"title_filter",
 	]) {
 		els[id] = new FakeInput();
 	}
@@ -129,7 +130,7 @@ test("a later apps list does not revert a newly picked app", async () => {
 });
 
 test("picking an app resets overrides and shows its window class", async () => {
-	const pi = await openInspector({ app: null, class_override: "x", custom_args: "--y" });
+	const pi = await openInspector({ app: null, class_override: "x", custom_args: "--y", title_filter: "z" });
 	pi.receive("sendToPropertyInspector", { apps: APPS });
 	pi.els.app.value = "org.mozilla.firefox";
 	pi.els.app.listeners.change();
@@ -137,6 +138,7 @@ test("picking an app resets overrides and shows its window class", async () => {
 	assert.equal(saved.app, "org.mozilla.firefox");
 	assert.equal(saved.class_override, null);
 	assert.equal(saved.custom_args, null);
+	assert.equal(saved.title_filter, null);
 	assert.equal(pi.els.class_override.placeholder, "firefox");
 });
 

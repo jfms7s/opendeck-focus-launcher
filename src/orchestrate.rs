@@ -150,7 +150,9 @@ pub const LAUNCH_GRACE: Duration = Duration::from_secs(4);
 
 /// Remembers recent launches per app id (shared by every key), so a second
 /// press, or another key bound to the same app, during a cold start doesn't
-/// launch a duplicate. Cleared as soon as the app's window shows up.
+/// launch a duplicate. Cleared as soon as the app's window shows up. A key
+/// with a title filter is guarded under the app id plus its filter, so keys
+/// for different windows of one app don't hold each other back.
 pub struct LaunchGuard {
     grace: Duration,
     launched_at: Mutex<HashMap<String, Instant>>,
@@ -205,15 +207,24 @@ fn backend_failure(e: BackendError) -> RunOutcome {
     }
 }
 
+/// The key's target: its app, the windows that belong to the key, and the
+/// launch-guard key (the app id, plus the title filter when one applied).
+struct Target<'a> {
+    entry: &'a AppEntry,
+    snapshot: WindowSnapshot,
+    guard_key: String,
+}
+
 /// Resolves the target app and class, then snapshots its windows, retrying
 /// with the entry id (see `id_fallback_class`) when the app's own class
-/// matches nothing. A failed retry is reported, not taken as "no windows":
-/// launching on an unknown state could open a duplicate.
+/// matches nothing, and finally narrows them by the title filter. A failed
+/// retry or title read is reported, not taken as "no windows": launching on
+/// an unknown state could open a duplicate.
 async fn target_snapshot<'a>(
     backend: &dyn WindowBackend,
     settings: &FocusOrLaunchSettings,
     apps: &'a [AppEntry],
-) -> Result<(&'a AppEntry, WindowSnapshot), RunOutcome> {
+) -> Result<Target<'a>, RunOutcome> {
     let Some(app_id) = settings.app_id() else {
         return Err(RunOutcome::NoAppSelected);
     };
@@ -247,7 +258,63 @@ async fn target_snapshot<'a>(
         snapshot.windows,
         snapshot.active
     );
-    Ok((entry, snapshot))
+
+    let mut guard_key = entry.id.clone();
+    if let Some(filter) = settings.title_filter()
+        && apply_title_filter(backend, &mut snapshot, filter, &entry.id).await?
+    {
+        guard_key = format!("{}\u{0}{filter}", entry.id);
+    }
+    Ok(Target {
+        entry,
+        snapshot,
+        guard_key,
+    })
+}
+
+/// Keeps the windows whose title contains `filter`, ignoring case. Returns
+/// whether the filter applied: `false` when the backend can't read titles,
+/// in which case the class match stands (logged). Titles are never logged.
+async fn apply_title_filter(
+    backend: &dyn WindowBackend,
+    snapshot: &mut WindowSnapshot,
+    filter: &str,
+    app_id: &str,
+) -> Result<bool, RunOutcome> {
+    if snapshot.windows.is_empty() {
+        return Ok(true);
+    }
+    let Some(titles) = backend
+        .window_titles(&snapshot.windows)
+        .await
+        .map_err(backend_failure)?
+    else {
+        log::warn!(
+            "{app_id}: this window backend can't read window titles; ignoring the title filter {filter:?}"
+        );
+        return Ok(false);
+    };
+    if titles.len() != snapshot.windows.len() {
+        return Err(RunOutcome::ListWindowsFailed(format!(
+            "asked for {} window title(s), got {}",
+            snapshot.windows.len(),
+            titles.len()
+        )));
+    }
+    let needle = filter.to_lowercase();
+    let windows = std::mem::take(&mut snapshot.windows);
+    snapshot.windows = windows
+        .into_iter()
+        .zip(titles)
+        .filter(|(_, title)| title.to_lowercase().contains(&needle))
+        .map(|(id, _)| id)
+        .collect();
+    log::info!(
+        "{app_id}: title filter {filter:?} kept {} window(s) {:?}",
+        snapshot.windows.len(),
+        snapshot.windows
+    );
+    Ok(true)
 }
 
 /// Runs one press for `intent` and reports what happened.
@@ -257,12 +324,16 @@ pub async fn run(
     settings: &FocusOrLaunchSettings,
     apps: &[AppEntry],
 ) -> RunOutcome {
-    let (entry, snapshot) = match target_snapshot(ctx.backend, settings, apps).await {
+    let Target {
+        entry,
+        snapshot,
+        guard_key,
+    } = match target_snapshot(ctx.backend, settings, apps).await {
         Ok(v) => v,
         Err(outcome) => return outcome,
     };
     if !snapshot.windows.is_empty() {
-        ctx.launches.clear(&entry.id);
+        ctx.launches.clear(&guard_key);
     }
 
     let decision = match intent {
@@ -276,7 +347,7 @@ pub async fn run(
     };
 
     match decision {
-        Decision::Launch => launch(ctx, settings, entry),
+        Decision::Launch => launch(ctx, settings, entry, &guard_key),
         Decision::Activate(id) => match ctx.backend.activate(&id).await {
             Ok(()) => RunOutcome::Activated(id),
             Err(e) => RunOutcome::ActivateFailed(id, e.to_string()),
@@ -290,9 +361,14 @@ pub async fn run(
     }
 }
 
-fn launch(ctx: &Context<'_>, settings: &FocusOrLaunchSettings, entry: &AppEntry) -> RunOutcome {
+fn launch(
+    ctx: &Context<'_>,
+    settings: &FocusOrLaunchSettings,
+    entry: &AppEntry,
+    guard_key: &str,
+) -> RunOutcome {
     let now = Instant::now();
-    if ctx.launches.is_pending(&entry.id, now) {
+    if ctx.launches.is_pending(guard_key, now) {
         return RunOutcome::LaunchPending;
     }
     let argv = match build_launch_argv(
@@ -305,7 +381,7 @@ fn launch(ctx: &Context<'_>, settings: &FocusOrLaunchSettings, entry: &AppEntry)
     };
     match ctx.launcher.launch(&argv) {
         Ok(()) => {
-            ctx.launches.record(&entry.id, now);
+            ctx.launches.record(guard_key, now);
             RunOutcome::Launched(argv)
         }
         Err(e) => RunOutcome::LaunchFailed(e.to_string()),
@@ -358,6 +434,12 @@ mod tests {
         minimize_calls: Mutex<Vec<WindowId>>,
         close_calls: Mutex<Vec<WindowId>>,
         close_fails_for: Vec<WindowId>,
+        /// Window titles by id; `None` plays a backend that can't read them.
+        titles: Option<HashMap<WindowId, String>>,
+        titles_err: Option<BackendError>,
+        /// Drop the last title, breaking the one-title-per-id contract.
+        titles_short: bool,
+        title_calls: Mutex<Vec<Vec<WindowId>>>,
     }
 
     #[async_trait]
@@ -407,7 +489,53 @@ mod tests {
                 None => Ok(self.active.clone()),
             }
         }
+
+        async fn window_titles(
+            &self,
+            ids: &[WindowId],
+        ) -> Result<Option<Vec<String>>, BackendError> {
+            self.title_calls.lock().unwrap().push(ids.to_vec());
+            if let Some(err) = &self.titles_err {
+                return Err(err.clone());
+            }
+            Ok(self.titles.as_ref().map(|titles| {
+                let mut out: Vec<String> = ids
+                    .iter()
+                    .map(|id| titles.get(id).cloned().unwrap_or_default())
+                    .collect();
+                if self.titles_short {
+                    out.pop();
+                }
+                out
+            }))
+        }
     }
+
+    /// Firefox with one window per `(id, title)`.
+    fn with_titled_windows(windows: &[(&str, &str)]) -> RecordingFakeBackend {
+        let ids_only: Vec<&str> = windows.iter().map(|(w, _)| *w).collect();
+        RecordingFakeBackend {
+            titles: Some(
+                windows
+                    .iter()
+                    .map(|(w, t)| (id(w), (*t).to_string()))
+                    .collect(),
+            ),
+            ..with_windows("firefox", &ids_only)
+        }
+    }
+
+    fn firefox_titled(filter: &str) -> FocusOrLaunchSettings {
+        let mut s = firefox();
+        s.title_filter = Some(filter.to_string());
+        s
+    }
+
+    const GRAFANA_AND_GITHUB: &[(&str, &str)] = &[
+        ("w1", "Grafana - Mozilla Firefox"),
+        ("w2", "Pull requests · GitHub - Mozilla Firefox"),
+        ("w3", "Issues · GitHub - Mozilla Firefox"),
+    ];
 
     fn with_windows(class: &str, windows: &[&str]) -> RecordingFakeBackend {
         RecordingFakeBackend {
@@ -790,6 +918,159 @@ mod tests {
             )
             .await;
         assert_eq!(outcome, RunOutcome::ClosedAll(ids(&["w1"])));
+    }
+
+    #[tokio::test]
+    async fn a_title_filter_narrows_the_keys_windows() {
+        let h = Harness::new(with_titled_windows(GRAFANA_AND_GITHUB));
+        assert_eq!(
+            h.tap(&firefox_titled("github"), &firefox_apps()).await,
+            RunOutcome::Activated(id("w2"))
+        );
+        assert_eq!(
+            *h.backend.title_calls.lock().unwrap(),
+            vec![ids(&["w1", "w2", "w3"])]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_title_filter_ignores_case_on_both_sides() {
+        let h = Harness::new(with_titled_windows(GRAFANA_AND_GITHUB));
+        assert_eq!(
+            h.tap(&firefox_titled("  gRAFANA "), &firefox_apps()).await,
+            RunOutcome::Activated(id("w1"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_title_filter_cycles_only_among_its_matches() {
+        let mut backend = with_titled_windows(GRAFANA_AND_GITHUB);
+        backend.active = Some(id("w3"));
+        let h = Harness::new(backend);
+        assert_eq!(
+            h.tap(&firefox_titled("GitHub"), &firefox_apps()).await,
+            RunOutcome::Activated(id("w2"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_focused_window_outside_the_filter_brings_the_match_forward() {
+        let mut backend = with_titled_windows(GRAFANA_AND_GITHUB);
+        backend.active = Some(id("w1"));
+        let h = Harness::new(backend);
+        assert_eq!(
+            h.tap(&firefox_titled("github"), &firefox_apps()).await,
+            RunOutcome::Activated(id("w2"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_title_filter_with_no_match_launches() {
+        let h = Harness::new(with_titled_windows(GRAFANA_AND_GITHUB));
+        let outcome = h.tap(&firefox_titled("jellyfin"), &firefox_apps()).await;
+        assert!(matches!(outcome, RunOutcome::Launched(_)), "{outcome:?}");
+        assert!(h.backend.activate_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn without_a_title_filter_titles_are_never_read() {
+        for filter in [None, Some(""), Some("   ")] {
+            let h = Harness::new(with_titled_windows(GRAFANA_AND_GITHUB));
+            let mut s = firefox();
+            s.title_filter = filter.map(String::from);
+            assert_eq!(
+                h.tap(&s, &firefox_apps()).await,
+                RunOutcome::Activated(id("w1"))
+            );
+            assert!(
+                h.backend.title_calls.lock().unwrap().is_empty(),
+                "{filter:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn titles_are_not_read_when_no_window_of_the_app_is_open() {
+        let h = Harness::new(RecordingFakeBackend::default());
+        let outcome = h.tap(&firefox_titled("github"), &firefox_apps()).await;
+        assert!(matches!(outcome, RunOutcome::Launched(_)), "{outcome:?}");
+        assert!(h.backend.title_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_backend_that_cannot_read_titles_ignores_the_filter() {
+        let mut backend = with_titled_windows(GRAFANA_AND_GITHUB);
+        backend.titles = None;
+        let h = Harness::new(backend);
+        assert_eq!(
+            h.tap(&firefox_titled("github"), &firefox_apps()).await,
+            RunOutcome::Activated(id("w1"))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_title_read_is_reported_and_does_not_launch() {
+        let mut backend = with_titled_windows(GRAFANA_AND_GITHUB);
+        backend.titles_err = Some(BackendError::CommandFailed("boom".into()));
+        let h = Harness::new(backend);
+        assert_eq!(
+            h.tap(&firefox_titled("jellyfin"), &firefox_apps()).await,
+            RunOutcome::ListWindowsFailed("boom".into())
+        );
+        assert!(h.launched().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_title_list_of_the_wrong_length_is_reported_and_does_not_launch() {
+        let mut backend = with_titled_windows(GRAFANA_AND_GITHUB);
+        backend.titles_short = true;
+        let h = Harness::new(backend);
+        let outcome = h.tap(&firefox_titled("jellyfin"), &firefox_apps()).await;
+        assert!(
+            matches!(outcome, RunOutcome::ListWindowsFailed(_)),
+            "{outcome:?}"
+        );
+        assert!(h.launched().is_empty());
+    }
+
+    #[tokio::test]
+    async fn keys_for_one_app_with_different_filters_launch_independently() {
+        let h = Harness::new(with_titled_windows(GRAFANA_AND_GITHUB));
+        let apps = firefox_apps();
+        let jellyfin = firefox_titled("jellyfin");
+        let plex = firefox_titled("plex");
+        assert!(matches!(
+            h.tap(&jellyfin, &apps).await,
+            RunOutcome::Launched(_)
+        ));
+        assert!(matches!(h.tap(&plex, &apps).await, RunOutcome::Launched(_)));
+        // The same key pressed again during the cold start still waits.
+        assert_eq!(h.tap(&jellyfin, &apps).await, RunOutcome::LaunchPending);
+        assert_eq!(h.launched().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_unfiltered_launch_does_not_block_a_filtered_key() {
+        let h = Harness::new(RecordingFakeBackend::default());
+        let apps = firefox_apps();
+        assert!(matches!(
+            h.tap(&firefox(), &apps).await,
+            RunOutcome::Launched(_)
+        ));
+        assert!(matches!(
+            h.tap(&firefox_titled("grafana"), &apps).await,
+            RunOutcome::Launched(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn close_all_with_a_title_filter_closes_only_the_matches() {
+        let h = Harness::new(with_titled_windows(GRAFANA_AND_GITHUB));
+        let outcome = h
+            .press(Intent::CloseAll, &firefox_titled("github"), &firefox_apps())
+            .await;
+        assert_eq!(outcome, RunOutcome::ClosedAll(ids(&["w2", "w3"])));
+        assert_eq!(*h.backend.close_calls.lock().unwrap(), ids(&["w2", "w3"]));
     }
 
     #[test]

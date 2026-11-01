@@ -82,6 +82,15 @@ xattr -dr com.apple.quarantine ~/Library/Application\ Support/opendeck/plugins/c
    - **Window class** — only needed if the app's windows report a different
      class than its `.desktop` file declares (letters, digits, spaces and
      `. _ - +` only).
+   - **Window title contains** — only the app's windows whose title contains
+     this text (ignoring case) belong to the key: a press focuses and cycles
+     among those, holding (with close-all on) closes only those, and with none
+     open the key launches. Combine it with **Extra arguments** to open
+     exactly that window, e.g. title `Grafana` with arguments
+     `--new-window https://grafana.example`. Titles change with the open tab
+     or file, so match the project or site, not the page. KDE, GNOME and X11
+     only: on macOS the filter is ignored (the log says so) and the key
+     matches by app as usual.
    - **Command** — replaces the app's launch command.
    - **Extra arguments** — appended to the command.
 
@@ -127,6 +136,7 @@ and notes) in the release notes.
 | 18 | macOS: an app hidden with ⌘H → press shows it and focuses its window. | n/a | n/a | n/a | not yet run |
 | 19 | macOS: an app with 3 windows → repeated presses visit each window in turn (cycling doesn't get stuck on two). | n/a | n/a | n/a | not yet run |
 | 20 | Make the backend hang (a `kdotool`, or `wmctrl` on X11, first on the PATH that runs `sleep 30`) → press alerts after about 3 s and launches nothing; another key works right after. | not yet run | n/a | not yet run | n/a |
+| 21 | Two windows of one app with different titles, a key with "Window title contains" set to text in one title → press focuses only that window; change the filter to text in neither title → press launches (with its Extra arguments). | not yet run | not yet run | not yet run | n/a |
 
 The plugin log (`~/.local/share/opendeck/logs/plugins/com.jfms7s.focuslauncher.sdPlugin.log`;
 on macOS `~/Library/Logs/opendeck/plugins/com.jfms7s.focuslauncher.sdPlugin.log`)

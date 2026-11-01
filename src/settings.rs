@@ -34,6 +34,9 @@ pub struct FocusOrLaunchSettings {
     /// stored JSON for compatibility with existing keys; see `hold_action`.
     #[serde(default)]
     pub close_all_windows_on_hold: bool,
+    /// Only the app's windows whose title contains this text (ignoring case)
+    /// count as the key's windows. Read through `title_filter()`.
+    pub title_filter: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -56,6 +59,7 @@ impl Default for FocusOrLaunchSettings {
             exec_override: None,
             custom_args: None,
             close_all_windows_on_hold: false,
+            title_filter: None,
         }
     }
 }
@@ -67,6 +71,11 @@ impl FocusOrLaunchSettings {
         } else {
             HoldAction::SameAsTap
         }
+    }
+
+    /// The window title filter, trimmed; `None` when unset or blank.
+    pub fn title_filter(&self) -> Option<&str> {
+        non_empty(self.title_filter.as_deref())
     }
 
     /// The selected app id, if one is set.
@@ -209,6 +218,7 @@ mod tests {
             s.icon_override = Some(blank.to_string());
             s.exec_override = Some(blank.to_string());
             s.custom_args = Some(blank.to_string());
+            s.title_filter = Some(blank.to_string());
             let entry = app("org.mozilla.firefox", "firefox");
 
             assert_eq!(resolve_class(&s, &entry), "firefox", "{blank:?}");
@@ -216,6 +226,7 @@ mod tests {
             assert_eq!(resolve_icon(&s, &entry), entry.icon.as_deref());
             assert_eq!(non_empty(s.exec_override.as_deref()), None);
             assert_eq!(non_empty(s.custom_args.as_deref()), None);
+            assert_eq!(s.title_filter(), None);
             assert_eq!(id_fallback_class(&s, &entry), Some("org.mozilla.firefox"));
         }
     }
@@ -228,6 +239,13 @@ mod tests {
             resolve_class(&s, &app("org.mozilla.firefox", "firefox")),
             "Navigator"
         );
+    }
+
+    #[test]
+    fn the_title_filter_is_trimmed() {
+        let mut s = settings("org.kde.konsole", true, true);
+        s.title_filter = Some("  homelab ".to_string());
+        assert_eq!(s.title_filter(), Some("homelab"));
     }
 
     #[test]
@@ -328,6 +346,7 @@ mod pi_contract_tests {
         assert!(settings.minimize_when_focused);
         assert!(settings.close_all_windows_on_hold);
         assert_eq!(settings.custom_args.as_deref(), Some("--new-window"));
+        assert_eq!(settings.title_filter(), Some("grafana"));
         assert_eq!(serde_json::to_value(&settings).unwrap(), value);
     }
 }

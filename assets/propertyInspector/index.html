@@ -40,6 +40,11 @@
 				<input type="text" id="class_override" placeholder="(auto-detected)" />
 				<p class="hint">Matched exactly (ignoring case); on macOS this is the bundle id (e.g. <code>com.apple.Safari</code>). Only needed if the app reports a different one.</p>
 			</div>
+			<div class="field">
+				<label for="title_filter">Window title contains</label>
+				<input type="text" id="title_filter" placeholder="(any window)" />
+				<p class="hint">Only the app's windows whose title contains this text (ignoring case) belong to this key; with none open, the key launches. Pick text that stays in the title, like a project or site name. Linux only (KDE, GNOME, X11).</p>
+			</div>
 		</section>
 
 		<section class="card">
@@ -73,6 +78,7 @@
 			{ key: "class_override", kind: "text", def: null, reset: true },
 			{ key: "exec_override", kind: "text", def: null, reset: true },
 			{ key: "custom_args", kind: "text", def: null, reset: true },
+			{ key: "title_filter", kind: "text", def: null, reset: true },
 		];
 
 		window.connectOpenActionSocketData = new Promise((resolve) => {
