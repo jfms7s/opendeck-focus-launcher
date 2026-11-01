@@ -37,6 +37,9 @@ jobs:
       - run: cargo clippy --target aarch64-apple-darwin --all-targets --locked -- -D warnings
       - name: Property inspector tests
         run: node --test tests/*.test.mjs
+      # The Release workflow builds the draft's notes from the README's smoke
+      # checklist markers; catch a broken marker here, not on a pushed tag.
+      - run: node scripts/release-body.mjs > /dev/null
       # Catches Cargo/manifest version drift, CodePaths and UUID mismatches
       # before a release does, not after.
       - name: Release build and bundle
