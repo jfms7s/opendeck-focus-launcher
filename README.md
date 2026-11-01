@@ -43,7 +43,7 @@ app's window class, ignoring case: `firefox` never matches `firefox-esr`.
 
 Download `opendeck-focus-launcher.streamDeckPlugin` from the latest
 [release](https://github.com/jfms7s/opendeck-focus-launcher/releases) (one
-bundle with Linux x86_64 and aarch64 and macOS Apple Silicon binaries; check it
+bundle with Linux x86_64 and macOS Apple Silicon binaries; check it
 against the release's `SHA256SUMS` — on macOS with `shasum -a 256 -c SHA256SUMS`),
 then either double-click it (if your file manager associates the extension with
 OpenDeck) or unzip it into OpenDeck's plugins folder and restart OpenDeck
@@ -168,7 +168,7 @@ The tests in `src/backend/` parse output captured from the real tools
 1. Bump `version` in `Cargo.toml` and `Version` in `assets/manifest.json`
    together (`node build.mjs --check-only` verifies they match).
 2. Push a `vX.Y.Z` tag. The release workflow checks the tag matches both
-   versions, runs fmt, clippy and the tests, builds both Linux architectures
+   versions, runs fmt, clippy and the tests, builds the Linux x86_64 binary
    and the macOS one (on a macOS runner), and
    creates a **draft** release with the bundle and `SHA256SUMS` attached.
 3. Run the smoke-test checklist against that bundle, note the results in the
