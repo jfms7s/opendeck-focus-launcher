@@ -65,6 +65,9 @@ xattr -dr com.apple.quarantine ~/Library/Application\ Support/opendeck/plugins/c
 2. **App** — pick an app from the dropdown. Its `.desktop` file path is shown
    underneath for reference. If the saved app is no longer installed it stays
    selected, marked "(not installed)", and the key alerts when pressed.
+   On Linux the list follows your menu: an app you hid (a `Hidden=true` or
+   `NoDisplay=true` copy in `~/.local/share/applications`) and entries meant
+   for another desktop (`OnlyShowIn=`/`NotShowIn=`) are left out.
 3. **Behaviour** — leave "Cycle to the next window if several are open" and
    "Minimize when already focused" checked for the default behavior described
    above. Unchecking the first means a repeat press does nothing (instead of

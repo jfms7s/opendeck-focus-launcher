@@ -49,25 +49,65 @@ pub fn list_installed_apps() -> Vec<AppEntry> {
 
 #[cfg(not(target_os = "macos"))]
 pub fn list_installed_apps() -> Vec<AppEntry> {
-    list_installed_apps_from_paths(default_paths())
+    let desktops = current_desktops(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref());
+    list_installed_apps_from_paths(default_paths(), &desktops)
+}
+
+/// The colon-separated `XDG_CURRENT_DESKTOP` list, blanks dropped.
+#[cfg(not(target_os = "macos"))]
+fn current_desktops(raw: Option<&str>) -> Vec<String> {
+    raw.unwrap_or_default()
+        .split(':')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether an entry's `OnlyShowIn=`/`NotShowIn=` let it show on the current
+/// desktops (ASCII case ignored). With no current desktop known, everything
+/// shows.
+#[cfg(not(target_os = "macos"))]
+fn shown_on(only: Option<Vec<&str>>, not: Option<Vec<&str>>, desktops: &[String]) -> bool {
+    if desktops.is_empty() {
+        return true;
+    }
+    let on_current = |list: &[&str]| {
+        list.iter()
+            .any(|item| desktops.iter().any(|d| d.eq_ignore_ascii_case(item.trim())))
+    };
+    if not.is_some_and(|list| on_current(&list)) {
+        return false;
+    }
+    only.is_none_or(|list| on_current(&list))
 }
 
 #[cfg(not(target_os = "macos"))]
-fn list_installed_apps_from_paths<I: IntoIterator<Item = PathBuf>>(paths: I) -> Vec<AppEntry> {
+fn list_installed_apps_from_paths<I: IntoIterator<Item = PathBuf>>(
+    paths: I,
+    desktops: &[String],
+) -> Vec<AppEntry> {
     let locales = freedesktop_desktop_entry::get_languages_from_env();
     // XDG data dirs can list the same app id twice (e.g. a Flatpak override
     // in ~/.local/share/applications shadowing the system copy).
     // `default_paths()`/`Iter` walk user dirs before system dirs, i.e. in XDG
-    // precedence order, so keeping the first occurrence of each id is right.
+    // precedence order, so the first occurrence of each id wins. The id is
+    // recorded before any visibility check, so a hidden higher-precedence
+    // copy (`Hidden=true`, the spec's "deleted", a `NoDisplay=true` override
+    // in ~/.local/share/applications, or one meant for another desktop)
+    // hides the lower-precedence copies too.
     let mut seen_ids: HashSet<String> = HashSet::new();
     let mut apps: Vec<AppEntry> = Iter::new(paths.into_iter())
         .entries(Some(locales.as_slice()))
-        .filter(|entry: &DesktopEntry| {
+        .filter(|entry: &DesktopEntry| seen_ids.insert(entry.id().to_string()))
+        .filter(|entry| {
             // `Type=Link`/`Type=Directory` entries have no `Exec=`, so
             // surfacing them in the dropdown would silently no-op on select.
-            !entry.no_display() && !entry.hidden() && entry.type_() == Some("Application")
+            !entry.no_display()
+                && !entry.hidden()
+                && entry.type_() == Some("Application")
+                && shown_on(entry.only_show_in(), entry.not_show_in(), desktops)
         })
-        .filter(|entry| seen_ids.insert(entry.id().to_string()))
         .map(|entry| AppEntry {
             id: entry.id().to_string(),
             name: entry
@@ -724,7 +764,7 @@ mod tests {
         )
         .unwrap();
 
-        let apps = list_installed_apps_from_paths(vec![dir.path().to_path_buf()]);
+        let apps = list_installed_apps_from_paths(vec![dir.path().to_path_buf()], &[]);
         assert_eq!(apps.len(), 1);
         assert_eq!(apps[0].name, "Test App");
         assert_eq!(apps[0].window_class, "testapp");
@@ -746,7 +786,7 @@ mod tests {
         )
         .unwrap();
 
-        let apps = list_installed_apps_from_paths(vec![dir.path().to_path_buf()]);
+        let apps = list_installed_apps_from_paths(vec![dir.path().to_path_buf()], &[]);
         assert!(apps.is_empty());
     }
 
@@ -763,7 +803,7 @@ mod tests {
         )
         .unwrap();
 
-        let apps = list_installed_apps_from_paths(vec![dir.path().to_path_buf()]);
+        let apps = list_installed_apps_from_paths(vec![dir.path().to_path_buf()], &[]);
         assert!(apps.is_empty());
     }
 
@@ -791,12 +831,134 @@ mod tests {
         .unwrap();
 
         // Search the user dir first, matching real XDG precedence order.
-        let apps = list_installed_apps_from_paths(vec![
-            user_dir.path().to_path_buf(),
-            system_dir.path().to_path_buf(),
-        ]);
+        let apps = list_installed_apps_from_paths(
+            vec![
+                user_dir.path().to_path_buf(),
+                system_dir.path().to_path_buf(),
+            ],
+            &[],
+        );
 
         assert_eq!(apps.len(), 1);
         assert_eq!(apps[0].name, "User Override");
+    }
+
+    /// Writes `body` as `<id>.desktop` under `<root>/applications`.
+    #[cfg(not(target_os = "macos"))]
+    fn write_entry(root: &Path, id: &str, body: &str) {
+        let apps_dir = root.join("applications");
+        std::fs::create_dir_all(&apps_dir).unwrap();
+        let mut file = std::fs::File::create(apps_dir.join(format!("{id}.desktop"))).unwrap();
+        writeln!(file, "[Desktop Entry]\n{body}").unwrap();
+    }
+
+    /// A user copy of `dup-app` with `user_extra`, then a visible system copy.
+    #[cfg(not(target_os = "macos"))]
+    fn user_and_system_copies(user_extra: &str, desktops: &[String]) -> Vec<AppEntry> {
+        let user_dir = tempfile::tempdir().unwrap();
+        write_entry(
+            user_dir.path(),
+            "dup-app",
+            &format!("Type=Application\nName=User Copy\nExec=dup-app\n{user_extra}"),
+        );
+        let system_dir = tempfile::tempdir().unwrap();
+        write_entry(
+            system_dir.path(),
+            "dup-app",
+            "Type=Application\nName=System Copy\nExec=dup-app\n",
+        );
+        list_installed_apps_from_paths(
+            vec![
+                user_dir.path().to_path_buf(),
+                system_dir.path().to_path_buf(),
+            ],
+            desktops,
+        )
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_hidden_user_copy_hides_the_system_copy() {
+        assert_eq!(user_and_system_copies("Hidden=true\n", &[]), vec![]);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_nodisplay_user_copy_hides_the_system_copy() {
+        assert_eq!(user_and_system_copies("NoDisplay=true\n", &[]), vec![]);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_user_copy_meant_for_another_desktop_hides_the_system_copy() {
+        let kde = vec!["KDE".to_string()];
+        assert_eq!(user_and_system_copies("NotShowIn=KDE;\n", &kde), vec![]);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn leaves_out_entries_not_shown_on_the_current_desktop() {
+        let dir = tempfile::tempdir().unwrap();
+        write_entry(
+            dir.path(),
+            "kdesystemsettings",
+            "Type=Application\nName=Settings Elsewhere\nExec=x\nNotShowIn=KDE;\n",
+        );
+        write_entry(
+            dir.path(),
+            "gnome-only",
+            "Type=Application\nName=GNOME Only\nExec=y\nOnlyShowIn=GNOME;\n",
+        );
+        write_entry(
+            dir.path(),
+            "everywhere",
+            "Type=Application\nName=Everywhere\nExec=z\n",
+        );
+        let names = |desktops: &[String]| {
+            list_installed_apps_from_paths(vec![dir.path().to_path_buf()], desktops)
+                .into_iter()
+                .map(|a| a.name)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(names(&["KDE".to_string()]), vec!["Everywhere"]);
+        assert_eq!(
+            names(&["GNOME".to_string()]),
+            vec!["Everywhere", "GNOME Only", "Settings Elsewhere"]
+        );
+        assert_eq!(names(&[]).len(), 3);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn shown_on_follows_only_and_not_show_in() {
+        let kde = vec!["KDE".to_string()];
+        let gnome = vec!["GNOME".to_string()];
+        // The crate splits on ';', so a trailing ';' leaves an empty item.
+        assert!(!shown_on(None, Some(vec!["KDE", ""]), &kde));
+        assert!(shown_on(None, Some(vec!["KDE", ""]), &gnome));
+        assert!(!shown_on(Some(vec!["GNOME", ""]), None, &kde));
+        assert!(shown_on(Some(vec!["GNOME", ""]), None, &gnome));
+        assert!(shown_on(Some(vec!["GNOME"]), Some(vec!["KDE"]), &[]));
+        assert!(shown_on(None, None, &kde));
+        assert!(!shown_on(None, Some(vec!["kde"]), &kde));
+        assert!(shown_on(Some(vec!["kde"]), None, &kde));
+        // XDG_CURRENT_DESKTOP can name several desktops; any match counts.
+        let ubuntu = vec!["ubuntu".to_string(), "GNOME".to_string()];
+        assert!(shown_on(Some(vec!["GNOME"]), None, &ubuntu));
+        assert!(!shown_on(None, Some(vec!["GNOME"]), &ubuntu));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn current_desktops_splits_on_colons_and_drops_blanks() {
+        assert_eq!(
+            current_desktops(Some("ubuntu:GNOME")),
+            vec!["ubuntu", "GNOME"]
+        );
+        assert_eq!(current_desktops(Some("KDE")), vec!["KDE"]);
+        assert!(current_desktops(Some("")).is_empty());
+        assert!(current_desktops(None).is_empty());
+        assert_eq!(current_desktops(Some(":KDE:")), vec!["KDE"]);
     }
 }
