@@ -240,6 +240,11 @@ fn expand_field_codes(arg: &str, ctx: &ExecContext) -> Vec<String> {
     }
 }
 
+// freedesktop-desktop-entry's DesktopEntry::parse_exec mis-splits quoted
+// arguments (https://github.com/pop-os/freedesktop-desktop-entry/issues/36,
+// open as of 0.8.4). Re-check when Dependabot proposes a newer version; if
+// it's fixed and the three real_* tests below pass with it, this tokenizer
+// can go.
 /// Turns a `.desktop` `Exec=` value into an argv.
 pub fn parse_desktop_exec(raw: &str, ctx: &ExecContext) -> Result<Vec<String>, ExecError> {
     let argv: Vec<String> = split_exec(&unescape_string_value(raw))?
@@ -482,7 +487,8 @@ mod tests {
     // The next three `Exec=` lines are real ones from .desktop files on the
     // development machine. `DesktopEntry::parse_exec` from
     // freedesktop-desktop-entry 0.8.3 rejects the first two ("unmatched
-    // quote") and splits the third's quoted argument into three pieces.
+    // quote") and splits the third's quoted argument into three pieces
+    // (https://github.com/pop-os/freedesktop-desktop-entry/issues/36).
     #[test]
     fn real_quoted_program_path() {
         assert_eq!(
