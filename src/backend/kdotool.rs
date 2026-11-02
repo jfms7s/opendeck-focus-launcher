@@ -46,6 +46,22 @@ fn parse_window_name(stdout: &str) -> String {
     title.strip_suffix('\r').unwrap_or(title).to_string()
 }
 
+/// Every window's class: `kdotool search --class . getwindowclassname %@`
+/// (the README's manual command). The pattern is a fixed constant, never
+/// user text, so nothing reaches kdotool's generated `KWin` script.
+const CLASSES_ARGS: &[&str] = &["search", "--class", ".", "getwindowclassname", "%@"];
+
+/// Parses the `CLASSES_ARGS` output: one class per line, one line per
+/// window (captured with kdotool v0.2.3 on Plasma 6 Wayland).
+fn parse_classes(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn parse_single_id(stdout: &str) -> Option<WindowId> {
     let trimmed = stdout.trim();
     (!trimmed.is_empty()).then(|| WindowId::new(trimmed))
@@ -106,6 +122,20 @@ impl WindowBackend for KdotoolBackend {
         Ok(parse_single_id(&String::from_utf8_lossy(&output.stdout)))
     }
 
+    async fn open_window_classes(&self) -> Result<Vec<String>, BackendError> {
+        let output = run("kdotool", CLASSES_ARGS).await?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let classes = parse_classes(&stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if classes.is_empty() && !output.status.success() && !stderr.trim().is_empty() {
+            return Err(BackendError::CommandFailed(format!(
+                "kdotool search failed: {}",
+                stderr.trim()
+            )));
+        }
+        Ok(classes)
+    }
+
     /// One `kdotool getwindowname <id>` per window. Not chained after
     /// `search`: separate runs need no line splitting, so a title with a
     /// newline in it can't shift titles onto other windows. Only the fixed
@@ -130,6 +160,19 @@ mod tests {
     // `kdotool search --class --classname '^plasmashell$'`, exit 0.
     const SEARCH_PLASMASHELL: &str =
         include_str!("../../tests/fixtures/kdotool-search-plasmashell.stdout");
+    /// `kdotool search --class --classname '^plasmashell$' getwindowclassname %@`
+    /// on the development machine: the `CLASSES_ARGS` output format, captured
+    /// with a filter matching only Plasma's own windows.
+    const CLASSNAMES: &str =
+        include_str!("../../tests/fixtures/kdotool-getwindowclassname-all.stdout");
+
+    #[test]
+    fn chained_class_names_are_one_per_window() {
+        let classes = parse_classes(CLASSNAMES);
+        assert_eq!(classes.len(), parse_search_output(SEARCH_PLASMASHELL).len());
+        assert!(classes.iter().all(|c| c == "plasmashell"));
+        assert!(parse_classes("").is_empty());
+    }
     // `kdotool search --class --classname '^opendeck-focus-launcher-no-such-app$'`:
     // empty output, exit 0.
     const SEARCH_NO_MATCH: &str =

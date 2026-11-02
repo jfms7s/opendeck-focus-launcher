@@ -3,7 +3,7 @@
 //! in `decision`, `orchestrate` and `settings`; this file only wires events.
 
 use crate::apps::{AppEntry, Launcher, SystemLauncher};
-use crate::backend::WindowBackend;
+use crate::backend::{WindowBackend, WindowClass};
 use crate::catalog::AppCatalog;
 use crate::decision::{Gesture, HOLD_THRESHOLD, Intent, intent_for, is_hold};
 use crate::icon::IconCache;
@@ -51,6 +51,36 @@ struct PiPayload<'a> {
 struct PiWindowCount {
     open_windows: Option<usize>,
     windows_note: Option<String>,
+    /// Only when the PI opens: the classes of every open window, for the
+    /// "pick from open windows" list. Absent on a settings change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window_classes: Option<Vec<PiClass>>,
+}
+
+/// One entry of the open-windows class list. `valid: false` marks a class
+/// `WindowClass::parse` rejects: the PI shows it but can't pick it.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct PiClass {
+    class: String,
+    valid: bool,
+}
+
+/// The picker list: each distinct class once (exact duplicates dropped),
+/// sorted ignoring case, validated as a key's class would be.
+fn pi_classes(mut classes: Vec<String>) -> Vec<PiClass> {
+    classes.sort_by(|a, b| {
+        a.to_lowercase()
+            .cmp(&b.to_lowercase())
+            .then_with(|| a.cmp(b))
+    });
+    classes.dedup();
+    classes
+        .into_iter()
+        .map(|class| PiClass {
+            valid: WindowClass::parse(&class).is_ok(),
+            class,
+        })
+        .collect()
 }
 
 /// The count message for a press's would-be result: `None` when no window
@@ -65,6 +95,7 @@ fn pi_window_count(count: Option<Result<usize, RunOutcome>>) -> PiWindowCount {
     PiWindowCount {
         open_windows,
         windows_note,
+        window_classes: None,
     }
 }
 
@@ -122,12 +153,15 @@ impl FocusOrLaunchAction {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Sends the property inspector how many windows a press would see now.
+    /// Sends the property inspector how many windows a press would see now
+    /// and, with `with_classes` (the PI just opened), every open window's
+    /// class for the picker.
     async fn send_window_count_to_pi(
         &self,
         instance: &Instance,
         settings: &FocusOrLaunchSettings,
         apps: &[AppEntry],
+        with_classes: bool,
     ) -> OpenActionResult<()> {
         let count = match self.backend.as_deref() {
             Some(backend) => {
@@ -135,9 +169,15 @@ impl FocusOrLaunchAction {
             }
             None => None,
         };
-        instance
-            .send_to_property_inspector(&pi_window_count(count))
-            .await
+        let mut message = pi_window_count(count);
+        if with_classes && let Some(backend) = self.backend.as_deref() {
+            let classes = backend.open_window_classes().await.unwrap_or_else(|e| {
+                log::warn!("could not list the open windows' classes: {e}");
+                Vec::new()
+            });
+            message.window_classes = Some(pi_classes(classes));
+        }
+        instance.send_to_property_inspector(&message).await
     }
 
     fn pressed_at(&self) -> std::sync::MutexGuard<'_, HashMap<String, Instant>> {
@@ -278,7 +318,7 @@ impl Action for FocusOrLaunchAction {
         self.pi_open().insert(instance.instance_id.clone());
         self.send_apps_to_pi(instance, &apps).await?;
         self.apply_visuals(instance, settings, &apps).await?;
-        self.send_window_count_to_pi(instance, settings, &apps)
+        self.send_window_count_to_pi(instance, settings, &apps, true)
             .await
     }
 
@@ -301,7 +341,7 @@ impl Action for FocusOrLaunchAction {
         let apps = self.catalog.containing(settings.app_id()).await;
         self.apply_visuals(instance, settings, &apps).await?;
         if self.pi_open().contains(&instance.instance_id) {
-            self.send_window_count_to_pi(instance, settings, &apps)
+            self.send_window_count_to_pi(instance, settings, &apps, false)
                 .await?;
         }
         Ok(())
@@ -367,6 +407,39 @@ mod tests {
     use crate::settings::test_support::{app, settings};
 
     #[test]
+    fn the_picker_list_is_sorted_deduplicated_and_validated() {
+        let list = pi_classes(vec![
+            "firefox".into(),
+            "Code".into(),
+            "firefox".into(),
+            "bad\"class".into(),
+            "org.kde.kate".into(),
+        ]);
+        let classes: Vec<(&str, bool)> = list.iter().map(|c| (c.class.as_str(), c.valid)).collect();
+        assert_eq!(
+            classes,
+            [
+                ("bad\"class", false),
+                ("Code", true),
+                ("firefox", true),
+                ("org.kde.kate", true)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_class_list_is_only_in_the_message_when_sent() {
+        let without = serde_json::to_value(pi_window_count(Some(Ok(1)))).unwrap();
+        assert!(without.get("window_classes").is_none());
+        let mut with = pi_window_count(Some(Ok(1)));
+        with.window_classes = Some(pi_classes(vec!["firefox".into()]));
+        assert_eq!(
+            serde_json::to_value(with).unwrap()["window_classes"],
+            serde_json::json!([{"class": "firefox", "valid": true}])
+        );
+    }
+
+    #[test]
     fn the_window_count_message_says_the_count_or_why_not() {
         assert_eq!(
             serde_json::to_value(pi_window_count(Some(Ok(3)))).unwrap(),
@@ -376,7 +449,8 @@ mod tests {
             pi_window_count(Some(Err(RunOutcome::NoAppSelected))),
             PiWindowCount {
                 open_windows: None,
-                windows_note: None
+                windows_note: None,
+                window_classes: None
             }
         );
         let unavailable = pi_window_count(Some(Err(RunOutcome::BackendUnavailable(

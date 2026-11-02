@@ -124,10 +124,11 @@ Some apps' running windows don't use the class their `.desktop` file
 declares (on macOS the class is always the app's bundle id). Chrome/Chromium
 PWAs are handled automatically (the key retries with the desktop id). The
 "Windows open now" line under the app shows whether the key finds the app's
-open windows; if it says 0 while the app is open, find the real class
-(`kdotool search --class . getwindowclassname %@` on KDE; on macOS the bundle
-id, `osascript -e 'id of app "Safari"'`) and set it as the
-Window class override.
+open windows. If it says 0 while the app is open (e.g. the Plex snap), open
+the app, reopen the key's settings and choose its window in **Pick from open
+windows** under Window class (KDE, GNOME and X11; a class the plugin can't
+match is listed but greyed out). On macOS, type the bundle id instead
+(`osascript -e 'id of app "Safari"'`).
 
 ## Manual smoke-test checklist
 
@@ -173,6 +174,7 @@ outside this repository.
 | 24 | Hold set to *Open another window*, app with Extra arguments `--new-window` (e.g. Firefox) and a window open → holding opens one new window; holding twice quickly opens only one. | not yet run | not yet run | not yet run | not yet run |
 | 25 | Hold set to *Open another window* on a single-instance app (e.g. Steam) → holding brings it forward and opens nothing new; a key saved by v0.6 with close-all on shows *Close all windows*. | not yet run | not yet run | not yet run | not yet run |
 | 26 | Open a key's settings with its app running in 2 windows → "Windows open now: 2"; set a Window class that matches nothing → it drops to 0; with the app closed → 0. | not yet run | not yet run | not yet run | not yet run |
+| 27 | Key for an app whose windows report another class (e.g. the Plex snap), app open → reopen its settings, pick the window under "Pick from open windows" → Window class is filled, the count goes above 0, and a press focuses it. | not yet run | not yet run | not yet run | n/a |
 <!-- smoke-checklist:end -->
 
 The plugin log (`~/.local/share/opendeck/logs/plugins/com.jfms7s.focuslauncher.sdPlugin.log`;

@@ -133,6 +133,14 @@ fn snapshot_from(all: &[GnomeWindow], class: &WindowClass) -> WindowSnapshot {
     WindowSnapshot { windows, active }
 }
 
+/// One class per window that has one: `wm_class`, else the instance name.
+fn classes_from(all: &[GnomeWindow]) -> Vec<String> {
+    all.iter()
+        .filter_map(|w| w.wm_class.clone().or_else(|| w.wm_class_instance.clone()))
+        .filter(|c| !c.is_empty())
+        .collect()
+}
+
 /// The title of each of `ids`, in order; `""` for a window not in `all`.
 fn titles_from(all: &[GnomeWindow], ids: &[WindowId]) -> Vec<String> {
     ids.iter()
@@ -182,6 +190,10 @@ impl WindowBackend for GnomeWindowCallsBackend {
         Ok(snapshot_from(&self.list().await?, class).windows)
     }
 
+    async fn open_window_classes(&self) -> Result<Vec<String>, BackendError> {
+        Ok(classes_from(&self.list().await?))
+    }
+
     async fn activate(&self, id: &WindowId) -> Result<(), BackendError> {
         self.call("Activate", &parse_id(id)?).await.map(drop)
     }
@@ -226,6 +238,21 @@ mod tests {
     // width, height, x, y, focus, in_current_workspace and workspace, listed
     // in stacking order (focused window last).
     const SAMPLE: &str = include_str!("../../tests/fixtures/window-calls-list.json");
+
+    #[test]
+    fn every_classed_window_offers_a_class_that_matches_it() {
+        let all = parse_all(SAMPLE).unwrap();
+        let classes = classes_from(&all);
+        assert!(!classes.is_empty());
+        // The class-less panel offers nothing.
+        assert!(classes.len() < all.len());
+        for c in &classes {
+            assert!(
+                !snapshot_from(&all, &class(c)).windows.is_empty(),
+                "{c} matches no window"
+            );
+        }
+    }
 
     fn class(s: &str) -> WindowClass {
         WindowClass::parse(s).unwrap()

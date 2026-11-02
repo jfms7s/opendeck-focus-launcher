@@ -70,6 +70,33 @@ fn parse_wmctrl_list(stdout: &str, class: &WindowClass) -> Vec<WindowId> {
         .collect()
 }
 
+/// The class to offer for one wmctrl `<instance>.<class>` column: the class
+/// half of the split where both halves agree (see `wm_class_candidates`),
+/// else the part after the last dot. Both are among the window's match
+/// candidates, so typing it as the key's class matches the window.
+fn offered_class(joined: &str) -> Option<&str> {
+    let candidates = wm_class_candidates(joined);
+    match candidates.as_slice() {
+        [] => None,
+        [only] => Some(only),
+        [instance, class] if instance.eq_ignore_ascii_case(class) => Some(class),
+        _ => joined.rsplit_once('.').map(|(_, class)| class),
+    }
+}
+
+/// Parses `wmctrl -l -x` output into one offered class per window.
+fn parse_wmctrl_classes(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            parse_hex_id(parts.next()?)?;
+            let _desktop = parts.next()?;
+            offered_class(parts.next()?).map(str::to_string)
+        })
+        .collect()
+}
+
 /// Parses `wmctrl -l -x` output into each window's title: the rest of the
 /// line after the host column, keyed by canonical id. A line with no title
 /// gets `""`.
@@ -159,6 +186,14 @@ impl WindowBackend for X11Backend {
         parse_xdotool_active_window(&String::from_utf8_lossy(&output.stdout))
     }
 
+    async fn open_window_classes(&self) -> Result<Vec<String>, BackendError> {
+        let output = run("wmctrl", &["-l", "-x"]).await?;
+        check_status(&output, "wmctrl -l -x")?;
+        Ok(parse_wmctrl_classes(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
+
     /// One more `wmctrl -l -x`; a window that has gone since gets `""`.
     async fn window_titles(&self, ids: &[WindowId]) -> Result<Option<Vec<String>>, BackendError> {
         let output = run("wmctrl", &["-l", "-x"]).await?;
@@ -181,6 +216,24 @@ mod tests {
     // clients); hostname redacted to `myhost`. Both WM_CLASS halves of the
     // Claude window contain dots.
     const REAL_WMCTRL: &str = include_str!("../../tests/fixtures/wmctrl-l-x.stdout");
+
+    #[test]
+    fn every_window_offers_a_class_that_matches_it() {
+        let classes = parse_wmctrl_classes(REAL_WMCTRL);
+        assert_eq!(classes, ["xwaylandvideobridge", "com.anthropic.Claude"]);
+        for class in &classes {
+            let wanted = WindowClass::parse(class).unwrap();
+            assert_eq!(parse_wmctrl_list(REAL_WMCTRL, &wanted).len(), 1, "{class}");
+        }
+    }
+
+    #[test]
+    fn the_offered_class_is_the_class_half() {
+        assert_eq!(offered_class("Navigator.firefox"), Some("firefox"));
+        assert_eq!(offered_class("kate"), Some("kate"));
+        assert_eq!(offered_class("a.b.c"), Some("c"));
+        assert_eq!(offered_class("N/A"), None);
+    }
 
     fn class(s: &str) -> WindowClass {
         WindowClass::parse(s).unwrap()

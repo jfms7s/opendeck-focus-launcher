@@ -102,6 +102,15 @@ pub trait WindowBackend: Send + Sync {
         Ok(None)
     }
 
+    /// One class per open window (any order, duplicates allowed), for the
+    /// property inspector's "pick from open windows" list: a class that,
+    /// typed as the key's Window class, matches that window. Only called when
+    /// a property inspector opens. The default, for a backend that can't
+    /// list every window (macOS, frozen), is empty: the PI hides the picker.
+    async fn open_window_classes(&self) -> Result<Vec<String>, BackendError> {
+        Ok(Vec::new())
+    }
+
     /// Matching windows and the focused window. The default makes two
     /// queries; a backend whose tool returns both at once (Window Calls)
     /// overrides it with one. Failing to read the focused window is not
