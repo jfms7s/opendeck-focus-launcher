@@ -29,11 +29,16 @@ pub struct FocusOrLaunchSettings {
     pub exec_override: Option<String>,
     /// Extra launch arguments, split the same way and appended.
     pub custom_args: Option<String>,
-    /// Holding the key (past `HOLD_THRESHOLD`) closes every window of the
-    /// app instead of the usual tap behaviour. Kept as a boolean in the
-    /// stored JSON for compatibility with existing keys; see `hold_action`.
+    /// The pre-0.7 hold setting: holding the key closes every window of the
+    /// app. Read only when `hold_action` is unset (keys saved by an older PI);
+    /// the PI keeps writing it (`hold_action == "close_all"`) so a downgrade
+    /// keeps close-all keys working. See `hold_action()`.
     #[serde(default)]
     pub close_all_windows_on_hold: bool,
+    /// What holding the key (past `HOLD_THRESHOLD`) does: `"same_as_tap"`,
+    /// `"new_window"` or `"close_all"`. Read through `hold_action()`.
+    #[serde(default)]
+    pub hold_action: Option<String>,
     /// Only the app's windows whose title contains this text (ignoring case)
     /// count as the key's windows. Read through `title_filter()`.
     pub title_filter: Option<String>,
@@ -59,17 +64,27 @@ impl Default for FocusOrLaunchSettings {
             exec_override: None,
             custom_args: None,
             close_all_windows_on_hold: false,
+            hold_action: None,
             title_filter: None,
         }
     }
 }
 
 impl FocusOrLaunchSettings {
+    /// The stored `hold_action`, or, for a key saved before it existed, the
+    /// old `close_all_windows_on_hold` boolean. An unknown value (e.g. from a
+    /// newer PI) falls back to the safe `SameAsTap`.
     pub fn hold_action(&self) -> HoldAction {
-        if self.close_all_windows_on_hold {
-            HoldAction::CloseAll
-        } else {
-            HoldAction::SameAsTap
+        match non_empty(self.hold_action.as_deref()) {
+            Some("same_as_tap") => HoldAction::SameAsTap,
+            Some("new_window") => HoldAction::NewWindow,
+            Some("close_all") => HoldAction::CloseAll,
+            Some(other) => {
+                log::warn!("unknown hold action {other:?}, treating it as same as tap");
+                HoldAction::SameAsTap
+            }
+            None if self.close_all_windows_on_hold => HoldAction::CloseAll,
+            None => HoldAction::SameAsTap,
         }
     }
 
@@ -280,11 +295,41 @@ mod tests {
     }
 
     #[test]
-    fn hold_action_follows_the_stored_boolean() {
+    fn hold_action_follows_the_stored_boolean_when_unset() {
         let mut s = FocusOrLaunchSettings::default();
         assert_eq!(s.hold_action(), HoldAction::SameAsTap);
         s.close_all_windows_on_hold = true;
         assert_eq!(s.hold_action(), HoldAction::CloseAll);
+        s.hold_action = Some("  ".to_string());
+        assert_eq!(s.hold_action(), HoldAction::CloseAll);
+    }
+
+    #[test]
+    fn the_stored_hold_action_wins_over_the_boolean() {
+        for (stored, expected) in [
+            ("same_as_tap", HoldAction::SameAsTap),
+            ("new_window", HoldAction::NewWindow),
+            ("close_all", HoldAction::CloseAll),
+        ] {
+            for legacy in [false, true] {
+                let s = FocusOrLaunchSettings {
+                    hold_action: Some(stored.to_string()),
+                    close_all_windows_on_hold: legacy,
+                    ..Default::default()
+                };
+                assert_eq!(s.hold_action(), expected, "{stored} with {legacy}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_unknown_hold_action_is_same_as_tap() {
+        let s = FocusOrLaunchSettings {
+            hold_action: Some("bring_here".to_string()),
+            close_all_windows_on_hold: true,
+            ..Default::default()
+        };
+        assert_eq!(s.hold_action(), HoldAction::SameAsTap);
     }
 
     #[test]
@@ -347,6 +392,7 @@ mod pi_contract_tests {
         assert!(!settings.cycle_windows);
         assert!(settings.minimize_when_focused);
         assert!(settings.close_all_windows_on_hold);
+        assert_eq!(settings.hold_action(), HoldAction::CloseAll);
         assert_eq!(settings.custom_args.as_deref(), Some("--new-window"));
         assert_eq!(settings.title_filter(), Some("grafana"));
         assert_eq!(serde_json::to_value(&settings).unwrap(), value);
@@ -366,5 +412,20 @@ mod pi_contract_tests {
         assert!(!settings.close_all_windows_on_hold);
         assert_eq!(settings.hold_action(), HoldAction::SameAsTap);
         assert_eq!(settings.title_filter(), None);
+    }
+
+    /// Hand-written in the nine-key shape v0.6 saved for a close-all key
+    /// (before `hold_action` existed).
+    #[test]
+    fn a_close_all_key_saved_by_v0_6_still_closes_all() {
+        let settings: FocusOrLaunchSettings = serde_json::from_str(
+            r#"{"app": "org.mozilla.firefox", "class_override": null, "cycle_windows": true,
+                "minimize_when_focused": true, "name_override": null, "icon_override": null,
+                "exec_override": null, "custom_args": null, "close_all_windows_on_hold": true,
+                "title_filter": null}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.hold_action, None);
+        assert_eq!(settings.hold_action(), HoldAction::CloseAll);
     }
 }

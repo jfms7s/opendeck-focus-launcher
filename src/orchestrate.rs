@@ -332,7 +332,10 @@ pub async fn run(
         Ok(v) => v,
         Err(outcome) => return outcome,
     };
-    if !snapshot.windows.is_empty() {
+    // A window means a cold start is over. Not for LaunchAnother, which
+    // launches while windows exist: clearing there would let a double hold
+    // open two windows.
+    if !snapshot.windows.is_empty() && intent != Intent::LaunchAnother {
         ctx.launches.clear(&guard_key);
     }
 
@@ -343,6 +346,7 @@ pub async fn run(
             settings.cycle_windows,
             settings.minimize_when_focused,
         ),
+        Intent::LaunchAnother => Decision::Launch,
         Intent::CloseAll => decide_close_all(&snapshot.windows),
     };
 
@@ -699,6 +703,42 @@ mod tests {
         ));
         assert_eq!(h.tap(&firefox(), &apps).await, RunOutcome::LaunchPending);
         assert_eq!(h.launched().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn launch_another_launches_with_extra_arguments_while_windows_exist() {
+        let h = Harness::new(with_windows("firefox", &["w1", "w2"]));
+        let mut s = firefox();
+        s.custom_args = Some("--new-window".to_string());
+        let outcome = h.press(Intent::LaunchAnother, &s, &firefox_apps()).await;
+        assert!(matches!(outcome, RunOutcome::Launched(_)), "{outcome:?}");
+        let launched = h.launched();
+        assert_eq!(launched.len(), 1);
+        assert_eq!(launched[0].last().map(String::as_str), Some("--new-window"));
+        assert!(h.backend.activate_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_second_launch_another_inside_the_guard_is_pending() {
+        // The app has windows, so the guard must survive them: a double hold
+        // opens one more window, not two.
+        let h = Harness::new(with_windows("firefox", &["w1"]));
+        let apps = firefox_apps();
+        assert!(matches!(
+            h.press(Intent::LaunchAnother, &firefox(), &apps).await,
+            RunOutcome::Launched(_)
+        ));
+        assert_eq!(
+            h.press(Intent::LaunchAnother, &firefox(), &apps).await,
+            RunOutcome::LaunchPending
+        );
+        assert_eq!(h.launched().len(), 1);
+        // A tap still focuses, and clears the guard since windows exist.
+        assert!(matches!(
+            h.tap(&firefox(), &apps).await,
+            RunOutcome::Activated(_) | RunOutcome::Minimized(_) | RunOutcome::NoOp
+        ));
+        assert!(!h.launches.is_pending("org.mozilla.firefox", Instant::now()));
     }
 
     #[tokio::test]

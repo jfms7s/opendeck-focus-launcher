@@ -59,12 +59,16 @@ class FakeInput {
 const tick = () => new Promise((resolve) => setTimeout(() => setTimeout(resolve, 0), 0));
 
 async function openInspector(settings) {
-	const els = { app: new FakeSelect() };
+	const els = { app: new FakeSelect(), hold_action: new FakeSelect() };
+	els.hold_action.replaceChildren(
+		new FakeOption("Same as tap", "same_as_tap"),
+		new FakeOption("Open another window", "new_window"),
+		new FakeOption("Close all windows", "close_all"),
+	);
 	for (const id of [
 		"path",
 		"cycle_windows",
 		"minimize_when_focused",
-		"close_all_windows_on_hold",
 		"name_override",
 		"icon_override",
 		"class_override",
@@ -146,7 +150,7 @@ test("defaults match the plugin and blank text is saved as null", async () => {
 	const pi = await openInspector({});
 	assert.equal(pi.els.cycle_windows.checked, true);
 	assert.equal(pi.els.minimize_when_focused.checked, true);
-	assert.equal(pi.els.close_all_windows_on_hold.checked, false);
+	assert.equal(pi.els.hold_action.value, "same_as_tap");
 	pi.els.class_override.value = "   ";
 	pi.els.class_override.listeners.change();
 	const saved = pi.lastSaved();
@@ -154,4 +158,36 @@ test("defaults match the plugin and blank text is saved as null", async () => {
 	// Same keys as the payload fixture the Rust contract test deserializes.
 	const fixture = JSON.parse(readFileSync(new URL("fixtures/pi-settings.json", import.meta.url), "utf8"));
 	assert.deepEqual(Object.keys(saved).sort(), Object.keys(fixture).sort());
+});
+
+test("a key saved with close-all on hold opens as Close all windows", async () => {
+	const pi = await openInspector({ app: "org.mozilla.firefox", close_all_windows_on_hold: true });
+	assert.equal(pi.els.hold_action.value, "close_all");
+	pi.els.name_override.value = "Browser";
+	pi.els.name_override.listeners.change();
+	assert.equal(pi.lastSaved().hold_action, "close_all");
+	assert.equal(pi.lastSaved().close_all_windows_on_hold, true);
+});
+
+test("a key saved without a hold setting opens as Same as tap", async () => {
+	const pi = await openInspector({ app: "org.mozilla.firefox" });
+	assert.equal(pi.els.hold_action.value, "same_as_tap");
+});
+
+test("the stored hold action wins over the old boolean, unknown ones show Same as tap", async () => {
+	let pi = await openInspector({ hold_action: "new_window", close_all_windows_on_hold: true });
+	assert.equal(pi.els.hold_action.value, "new_window");
+	pi = await openInspector({ hold_action: "bring_here", close_all_windows_on_hold: true });
+	assert.equal(pi.els.hold_action.value, "same_as_tap");
+});
+
+test("choosing a hold action saves it and keeps the old boolean in step", async () => {
+	const pi = await openInspector({ app: "org.mozilla.firefox", close_all_windows_on_hold: true });
+	pi.els.hold_action.value = "new_window";
+	pi.els.hold_action.listeners.change();
+	assert.equal(pi.lastSaved().hold_action, "new_window");
+	assert.equal(pi.lastSaved().close_all_windows_on_hold, false);
+	pi.els.hold_action.value = "close_all";
+	pi.els.hold_action.listeners.change();
+	assert.equal(pi.lastSaved().close_all_windows_on_hold, true);
 });
