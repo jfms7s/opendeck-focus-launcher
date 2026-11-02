@@ -59,7 +59,7 @@ class FakeInput {
 const tick = () => new Promise((resolve) => setTimeout(() => setTimeout(resolve, 0), 0));
 
 async function openInspector(settings) {
-	const els = { app: new FakeSelect(), hold_action: new FakeSelect() };
+	const els = { app: new FakeSelect(), hold_action: new FakeSelect(), window_picker: new FakeSelect() };
 	els.hold_action.replaceChildren(
 		new FakeOption("Same as tap", "same_as_tap"),
 		new FakeOption("Open another window", "new_window"),
@@ -223,4 +223,46 @@ test("picking another app clears the previous app's count", async () => {
 	pi.els.app.value = "org.mozilla.firefox";
 	pi.els.app.listeners.change();
 	assert.equal(pi.els.window_count.textContent, "");
+});
+
+const CLASSES = [
+	{ class: "bad\"class", valid: false },
+	{ class: "firefox", valid: true },
+	{ class: "plex", valid: true },
+];
+
+test("picking an open window's class fills Window class and saves it", async () => {
+	const pi = await openInspector({ app: "org.mozilla.firefox" });
+	pi.receive("sendToPropertyInspector", { apps: APPS });
+	pi.receive("sendToPropertyInspector", { open_windows: 0, windows_note: null, window_classes: CLASSES });
+	assert.equal(pi.els.window_picker.hidden, false);
+	assert.equal(pi.els.window_picker.options.length, 4);
+	pi.els.window_picker.value = "plex";
+	pi.els.window_picker.listeners.change();
+	assert.equal(pi.els.class_override.value, "plex");
+	assert.equal(pi.lastSaved().class_override, "plex");
+	assert.equal(pi.lastSaved().app, "org.mozilla.firefox");
+	assert.equal(pi.els.window_picker.value, "");
+});
+
+test("a class the plugin rejects is shown disabled and never written", async () => {
+	const pi = await openInspector({ app: "org.mozilla.firefox", class_override: "firefox" });
+	pi.receive("sendToPropertyInspector", { open_windows: 1, windows_note: null, window_classes: CLASSES });
+	const bad = pi.els.window_picker.options.find((o) => o.value === "bad\"class");
+	assert.equal(bad.disabled, true);
+	pi.els.window_picker.value = "bad\"class";
+	pi.els.window_picker.listeners.change();
+	assert.equal(pi.els.class_override.value, "firefox");
+	assert.equal(pi.lastSaved(), undefined);
+});
+
+test("the picker stays hidden without classes, and a count-only update keeps it", async () => {
+	let pi = await openInspector({ app: "org.mozilla.firefox" });
+	pi.receive("sendToPropertyInspector", { open_windows: 1, windows_note: null, window_classes: [] });
+	assert.equal(pi.els.window_picker.hidden, true);
+	pi = await openInspector({ app: "org.mozilla.firefox" });
+	pi.receive("sendToPropertyInspector", { open_windows: 1, windows_note: null, window_classes: CLASSES });
+	pi.receive("sendToPropertyInspector", { open_windows: 2, windows_note: null });
+	assert.equal(pi.els.window_picker.hidden, false);
+	assert.equal(pi.els.window_picker.options.length, 4);
 });

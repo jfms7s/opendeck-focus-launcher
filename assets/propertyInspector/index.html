@@ -47,6 +47,7 @@
 			<div class="field">
 				<label for="class_override">Window class</label>
 				<input type="text" id="class_override" placeholder="(auto-detected)" />
+				<select id="window_picker" hidden style="margin-top: 6px"><option value="">Pick from open windows&hellip;</option></select>
 				<p class="hint">Matched exactly (ignoring case); on macOS this is the bundle id (e.g. <code>com.apple.Safari</code>). Only needed if the app reports a different one.</p>
 			</div>
 			<div class="field">
@@ -128,6 +129,7 @@
 					const payload = message.payload || {};
 					if (Array.isArray(payload.apps)) populateApps(payload.apps);
 					if ("open_windows" in payload) renderWindowCount(payload);
+					if (Array.isArray(payload.window_classes)) renderWindowPicker(payload.window_classes);
 				} else if (message.event === "didReceiveSettings") {
 					applySettings(message.payload.settings || {});
 				}
@@ -171,6 +173,33 @@
 			} else {
 				el("window_count").textContent = "";
 			}
+		}
+
+		// The classes of every open window, sent when the PI opens. Picking
+		// one fills Window class; a class the plugin would reject is shown
+		// but disabled, and never written. Hidden when the list is empty
+		// (macOS, or a backend that can't list windows).
+		let pickableClasses = new Set();
+		function renderWindowPicker(classes) {
+			const picker = el("window_picker");
+			picker.replaceChildren(new Option("Pick from open windows…", ""));
+			pickableClasses = new Set();
+			for (const entry of classes) {
+				const option = new Option(entry.valid ? entry.class : `${entry.class} (can't be matched)`, entry.class);
+				option.disabled = !entry.valid;
+				if (entry.valid) pickableClasses.add(entry.class);
+				picker.appendChild(option);
+			}
+			picker.value = "";
+			picker.hidden = classes.length === 0;
+		}
+
+		function onWindowPicked() {
+			const picked = el("window_picker").value;
+			el("window_picker").value = "";
+			if (!pickableClasses.has(picked)) return;
+			el("class_override").value = picked;
+			sendSettings();
 		}
 
 		function populateApps(newApps) {
@@ -236,6 +265,7 @@
 		}
 
 		el("app").addEventListener("change", onAppChanged);
+		el("window_picker").addEventListener("change", onWindowPicked);
 		for (const field of FIELDS) {
 			if (field.kind !== "select" && field.kind !== "legacy") el(field.key).addEventListener("change", sendSettings);
 		}
