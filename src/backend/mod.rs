@@ -124,7 +124,7 @@ pub trait WindowBackend: Send + Sync {
 
 /// Near-miss cases every backend's parser must reject, shared so the
 /// adapters are held to one rule. Each entry is (window class, wanted class).
-#[cfg(all(test, not(target_os = "macos")))]
+#[cfg(test)]
 pub(crate) const NEAR_MISSES: &[(&str, &str)] = &[
     ("firefox-esr", "firefox"),
     ("firefoxdeveloperedition", "firefox"),

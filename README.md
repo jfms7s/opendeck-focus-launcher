@@ -20,12 +20,13 @@ new process, even when the app is already open.
   against a live session* — via `wmctrl` and `xdotool`, which must be
   installed and on `PATH`.
 
-- **macOS** (Apple Silicon) — via the Accessibility API. Apps are the `.app`
-  bundles in `/Applications`, `/System/Applications` (and their `Utilities`)
-  and `~/Applications`, matched by **bundle id** (e.g. `com.apple.Safari`).
-  Focusing, cycling, minimising and closing windows need the Accessibility
-  permission for OpenDeck: macOS asks the first time, or allow it in **System
-  Settings › Privacy & Security › Accessibility**. Launching an app that isn't
+- **macOS** (Apple Silicon) — *preview, never run on a Mac* — via the
+  Accessibility API. Apps are the `.app` bundles in `/Applications`,
+  `/System/Applications` (and their `Utilities`) and `~/Applications`,
+  matched by **bundle id** (e.g. `com.apple.Safari`). Focusing, cycling,
+  minimising and closing windows need the Accessibility permission for
+  OpenDeck: macOS asks the first time, or allow it in **System Settings ›
+  Privacy & Security › Accessibility**. Launching an app that isn't
   running works without it. Icons come from the app bundle (`.icns`, converted
   with the built-in `sips` and cached in `~/Library/Caches/opendeck-focus-launcher/`).
 

@@ -255,7 +255,7 @@ fn is_fresh(png: &Path, icns: &Path) -> bool {
 /// An app icon as a PNG: converted once with `sips`, then served from
 /// `~/Library/Caches/opendeck-focus-launcher/icons`.
 #[cfg(target_os = "macos")]
-fn icns_to_png(icns: &Path) -> Result<PathBuf, IconError> {
+pub(crate) fn icns_to_png(icns: &Path) -> Result<PathBuf, IconError> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
