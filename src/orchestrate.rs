@@ -4,7 +4,7 @@
 
 use crate::apps::{AppEntry, Launcher, build_launch_argv};
 use crate::backend::{BackendError, WindowBackend, WindowClass, WindowId, WindowSnapshot};
-use crate::decision::{Decision, Intent, decide, decide_close_all};
+use crate::decision::{Decision, Intent, decide, decide_close_all, step};
 use crate::settings::{
     FocusOrLaunchSettings, find_app, id_fallback_class, non_empty, resolve_class,
 };
@@ -328,6 +328,74 @@ pub async fn matching_window_count(
     target_snapshot(backend, settings, apps)
         .await
         .map(|target| target.snapshot.windows.len())
+}
+
+/// The window a dial's rotation shows: its id, its 1-based place among the
+/// key's windows, and its title when the backend can read titles.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DialPreview {
+    pub id: WindowId,
+    pub position: usize,
+    pub count: usize,
+    pub title: Option<String>,
+}
+
+/// Moves a dial's window cursor by `ticks` over the windows a press would
+/// see, and reads the new window's title. Never activates anything. `Ok(None)`
+/// when the app has no windows. `cursor` is the window shown before; one
+/// that has gone counts as none (see `step`).
+pub async fn dial_preview(
+    backend: &dyn WindowBackend,
+    settings: &FocusOrLaunchSettings,
+    apps: &[AppEntry],
+    cursor: Option<&WindowId>,
+    ticks: i16,
+) -> Result<Option<DialPreview>, RunOutcome> {
+    let windows = target_snapshot(backend, settings, apps)
+        .await?
+        .snapshot
+        .windows;
+    let current = cursor.and_then(|c| windows.iter().position(|w| w == c));
+    let Some(index) = step(windows.len(), current, ticks) else {
+        return Ok(None);
+    };
+    let id = windows[index].clone();
+    let title = match backend.window_titles(std::slice::from_ref(&id)).await {
+        Ok(Some(mut titles)) if titles.len() == 1 => titles.pop(),
+        Ok(_) => None,
+        Err(e) => {
+            log::warn!("could not read the title of window {id}: {e}");
+            None
+        }
+    };
+    Ok(Some(DialPreview {
+        id,
+        position: index + 1,
+        count: windows.len(),
+        title,
+    }))
+}
+
+/// A tap after rotating a dial: activates the window the dial shows if it
+/// still belongs to the key, else does a normal tap.
+pub async fn activate_chosen(
+    ctx: &Context<'_>,
+    settings: &FocusOrLaunchSettings,
+    apps: &[AppEntry],
+    chosen: &WindowId,
+) -> RunOutcome {
+    let still_there = match target_snapshot(ctx.backend, settings, apps).await {
+        Ok(target) => target.snapshot.windows.contains(chosen),
+        Err(outcome) => return outcome,
+    };
+    if !still_there {
+        log::info!("the window the dial showed ({chosen}) has gone; doing a normal tap");
+        return run(ctx, Intent::FocusOrLaunch, settings, apps).await;
+    }
+    match ctx.backend.activate(chosen).await {
+        Ok(()) => RunOutcome::Activated(chosen.clone()),
+        Err(e) => RunOutcome::ActivateFailed(chosen.clone(), e.to_string()),
+    }
 }
 
 /// Runs one press for `intent` and reports what happened.
@@ -801,6 +869,80 @@ mod tests {
         assert_eq!(
             matching_window_count(&backend, &FocusOrLaunchSettings::default(), &apps).await,
             Err(RunOutcome::NoAppSelected)
+        );
+    }
+
+    #[tokio::test]
+    async fn rotating_previews_windows_with_titles_and_never_activates() {
+        let h = Harness::new(with_titled_windows(GRAFANA_AND_GITHUB));
+        let apps = firefox_apps();
+        let first = dial_preview(&h.backend, &firefox(), &apps, None, 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.id, id("w1"));
+        assert_eq!((first.position, first.count), (1, 3));
+        assert_eq!(first.title.as_deref(), Some("Grafana - Mozilla Firefox"));
+        let back = dial_preview(&h.backend, &firefox(), &apps, Some(&first.id), -1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(back.id, id("w3"));
+        let gone = dial_preview(&h.backend, &firefox(), &apps, Some(&id("w9")), 2)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(gone.id, id("w2"));
+        assert!(h.backend.activate_calls.lock().unwrap().is_empty());
+        assert!(h.backend.minimize_calls.lock().unwrap().is_empty());
+        assert!(h.launched().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rotating_over_no_windows_shows_nothing_and_without_titles_no_title() {
+        let apps = firefox_apps();
+        let none = RecordingFakeBackend::default();
+        assert_eq!(
+            dial_preview(&none, &firefox(), &apps, None, 1).await,
+            Ok(None)
+        );
+        let untitled = with_windows("firefox", &["w1", "w2"]);
+        let preview = dial_preview(&untitled, &firefox(), &apps, None, -1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((preview.id, preview.title), (id("w2"), None));
+    }
+
+    #[tokio::test]
+    async fn a_press_after_rotating_activates_the_window_shown() {
+        let h = Harness::new(with_windows("firefox", &["w1", "w2", "w3"]));
+        let apps = firefox_apps();
+        let ctx = Context {
+            backend: &h.backend,
+            launcher: &h.launcher,
+            launches: &h.launches,
+        };
+        assert_eq!(
+            activate_chosen(&ctx, &firefox(), &apps, &id("w2")).await,
+            RunOutcome::Activated(id("w2"))
+        );
+        assert_eq!(*h.backend.activate_calls.lock().unwrap(), vec![id("w2")]);
+    }
+
+    #[tokio::test]
+    async fn a_press_after_the_shown_window_closed_is_a_normal_tap() {
+        let h = Harness::new(with_windows("firefox", &["w1", "w3"]));
+        let apps = firefox_apps();
+        let ctx = Context {
+            backend: &h.backend,
+            launcher: &h.launcher,
+            launches: &h.launches,
+        };
+        // Nothing focused: a normal tap brings up the oldest window.
+        assert_eq!(
+            activate_chosen(&ctx, &firefox(), &apps, &id("w2")).await,
+            RunOutcome::Activated(id("w1"))
         );
     }
 

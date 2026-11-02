@@ -40,8 +40,9 @@ is public.
   Other features may use them (e.g. Extra arguments to open a specific window).
   Lifted by owner decision.
 - **Dial support** (`Encoder` in `assets/manifest.json`, `dial_down`/`dial_up` in
-  `src/action.rs`): no new dial modes. One owner-approved exception: the dial
-  window switcher; after it lands, dials are frozen again. Lifted by owner decision.
+  `src/action.rs`): no new dial modes. The one owner-approved exception, the
+  dial window switcher (`dial_rotate`), landed on 2026-11-02; dials are frozen
+  again. Lifted by owner decision.
 
 Not frozen: Flatpak host launch (the owner chose full Flatpak support on
 2026-10-09).

@@ -44,6 +44,26 @@ pub fn is_hold(elapsed: std::time::Duration, threshold: std::time::Duration) -> 
     elapsed >= threshold
 }
 
+/// Where a dial's window cursor lands after `ticks` detents (positive
+/// clockwise) over `len` windows, wrapping both ways. `cursor` is the current
+/// window's position, `None` when there is none (or it has gone): then the
+/// first clockwise detent lands on the first window and the first
+/// anticlockwise one on the last. `None` when there are no windows.
+pub fn step(len: usize, cursor: Option<usize>, ticks: i16) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let len = len as i64;
+    let ticks = i64::from(ticks);
+    let target = match cursor.map(|c| c as i64).filter(|&c| c < len) {
+        Some(c) => c + ticks,
+        None if ticks > 0 => ticks - 1,
+        None if ticks < 0 => len + ticks,
+        None => 0,
+    };
+    Some(target.rem_euclid(len) as usize)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Decision {
     Launch,
@@ -132,6 +152,33 @@ mod tests {
             intent_for(Gesture::Hold, HoldAction::CloseAll),
             Intent::CloseAll
         );
+    }
+
+    #[test]
+    fn step_moves_both_ways_and_wraps() {
+        assert_eq!(step(3, Some(0), 1), Some(1));
+        assert_eq!(step(3, Some(2), 1), Some(0));
+        assert_eq!(step(3, Some(0), -1), Some(2));
+        assert_eq!(step(3, Some(1), 5), Some(0));
+        assert_eq!(step(3, Some(1), -7), Some(0));
+        assert_eq!(step(3, Some(1), 0), Some(1));
+    }
+
+    #[test]
+    fn step_without_a_cursor_starts_at_the_matching_end() {
+        assert_eq!(step(3, None, 1), Some(0));
+        assert_eq!(step(3, None, 2), Some(1));
+        assert_eq!(step(3, None, -1), Some(2));
+        assert_eq!(step(3, None, 0), Some(0));
+        // A cursor past a list that shrank counts as no cursor.
+        assert_eq!(step(2, Some(5), 1), Some(0));
+    }
+
+    #[test]
+    fn step_over_no_windows_has_no_cursor() {
+        assert_eq!(step(0, None, 1), None);
+        assert_eq!(step(0, Some(0), -1), None);
+        assert_eq!(step(1, Some(0), i16::MIN), Some(0));
     }
 
     #[test]
