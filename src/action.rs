@@ -12,7 +12,7 @@ use crate::settings::{FocusOrLaunchSettings, find_app, resolve_display_name, res
 use async_trait::async_trait;
 use openaction::{Action, Instance, OpenActionResult};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -41,6 +41,31 @@ impl<'a> From<&'a AppEntry> for PiApp<'a> {
 #[derive(Debug, Serialize)]
 struct PiPayload<'a> {
     apps: Vec<PiApp<'a>>,
+}
+
+/// The second message to the property inspector: how many windows a press
+/// would see now. Sent after the apps list so a slow backend never holds up
+/// the app dropdown. `open_windows: None` with a note means "unknown, and
+/// why"; both `None` means there is nothing to show (no app selected).
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct PiWindowCount {
+    open_windows: Option<usize>,
+    windows_note: Option<String>,
+}
+
+/// The count message for a press's would-be result: `None` when no window
+/// backend fits this desktop.
+fn pi_window_count(count: Option<Result<usize, RunOutcome>>) -> PiWindowCount {
+    let (open_windows, windows_note) = match count {
+        None => (None, Some(report_for(&RunOutcome::NoBackend).message)),
+        Some(Ok(n)) => (Some(n), None),
+        Some(Err(RunOutcome::NoAppSelected)) => (None, None),
+        Some(Err(outcome)) => (None, Some(report_for(&outcome).message)),
+    };
+    PiWindowCount {
+        open_windows,
+        windows_note,
+    }
 }
 
 /// The intent a key or dial release asks for: a hold (pressed for at least
@@ -73,6 +98,9 @@ pub struct FocusOrLaunchAction {
     /// When each instance's key or dial was last pressed, so the release can
     /// tell a hold from a tap. One action object serves every key.
     pressed_at: Mutex<HashMap<String, Instant>>,
+    /// Instances whose property inspector is open, so a settings change
+    /// re-sends the window count only to a PI that can show it.
+    pi_open: Mutex<HashSet<String>>,
 }
 
 impl FocusOrLaunchAction {
@@ -84,7 +112,32 @@ impl FocusOrLaunchAction {
             icons: IconCache::new(),
             launches: LaunchGuard::default(),
             pressed_at: Mutex::new(HashMap::new()),
+            pi_open: Mutex::new(HashSet::new()),
         }
+    }
+
+    fn pi_open(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
+        self.pi_open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Sends the property inspector how many windows a press would see now.
+    async fn send_window_count_to_pi(
+        &self,
+        instance: &Instance,
+        settings: &FocusOrLaunchSettings,
+        apps: &[AppEntry],
+    ) -> OpenActionResult<()> {
+        let count = match self.backend.as_deref() {
+            Some(backend) => {
+                Some(orchestrate::matching_window_count(backend, settings, apps).await)
+            }
+            None => None,
+        };
+        instance
+            .send_to_property_inspector(&pi_window_count(count))
+            .await
     }
 
     fn pressed_at(&self) -> std::sync::MutexGuard<'_, HashMap<String, Instant>> {
@@ -207,6 +260,7 @@ impl Action for FocusOrLaunchAction {
         _settings: &Self::Settings,
     ) -> OpenActionResult<()> {
         self.pressed_at().remove(&instance.instance_id);
+        self.pi_open().remove(&instance.instance_id);
         Ok(())
     }
 
@@ -221,17 +275,36 @@ impl Action for FocusOrLaunchAction {
         // Opening the PI is the "rescan" moment: an icon that failed before
         // (a theme installed since, a path created since) gets another try.
         self.icons.forget_all();
+        self.pi_open().insert(instance.instance_id.clone());
         self.send_apps_to_pi(instance, &apps).await?;
-        self.apply_visuals(instance, settings, &apps).await
+        self.apply_visuals(instance, settings, &apps).await?;
+        self.send_window_count_to_pi(instance, settings, &apps)
+            .await
     }
 
+    async fn property_inspector_did_disappear(
+        &self,
+        instance: &Instance,
+        _settings: &Self::Settings,
+    ) -> OpenActionResult<()> {
+        self.pi_open().remove(&instance.instance_id);
+        Ok(())
+    }
+
+    /// The PI saved a change (an app picked, a class typed): redraw the key
+    /// and, while its PI is open, update the window count.
     async fn did_receive_settings(
         &self,
         instance: &Instance,
         settings: &Self::Settings,
     ) -> OpenActionResult<()> {
         let apps = self.catalog.containing(settings.app_id()).await;
-        self.apply_visuals(instance, settings, &apps).await
+        self.apply_visuals(instance, settings, &apps).await?;
+        if self.pi_open().contains(&instance.instance_id) {
+            self.send_window_count_to_pi(instance, settings, &apps)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn key_down(
@@ -292,6 +365,35 @@ fn key_face<'a>(settings: &'a FocusOrLaunchSettings, apps: &'a [AppEntry]) -> Ke
 mod tests {
     use super::*;
     use crate::settings::test_support::{app, settings};
+
+    #[test]
+    fn the_window_count_message_says_the_count_or_why_not() {
+        assert_eq!(
+            serde_json::to_value(pi_window_count(Some(Ok(3)))).unwrap(),
+            serde_json::json!({"open_windows": 3, "windows_note": null})
+        );
+        assert_eq!(
+            pi_window_count(Some(Err(RunOutcome::NoAppSelected))),
+            PiWindowCount {
+                open_windows: None,
+                windows_note: None
+            }
+        );
+        let unavailable = pi_window_count(Some(Err(RunOutcome::BackendUnavailable(
+            "kdotool not found".into(),
+        ))));
+        assert_eq!(unavailable.open_windows, None);
+        assert!(
+            unavailable
+                .windows_note
+                .as_deref()
+                .is_some_and(|n| n.contains("kdotool not found")),
+            "{unavailable:?}"
+        );
+        let no_backend = pi_window_count(None);
+        assert_eq!(no_backend.open_windows, None);
+        assert!(no_backend.windows_note.is_some());
+    }
 
     #[test]
     fn key_face_shows_the_installed_apps_name_and_icon() {

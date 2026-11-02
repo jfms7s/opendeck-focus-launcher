@@ -67,6 +67,7 @@ async function openInspector(settings) {
 	);
 	for (const id of [
 		"path",
+		"window_count",
 		"cycle_windows",
 		"minimize_when_focused",
 		"name_override",
@@ -190,4 +191,36 @@ test("choosing a hold action saves it and keeps the old boolean in step", async 
 	pi.els.hold_action.value = "close_all";
 	pi.els.hold_action.listeners.change();
 	assert.equal(pi.lastSaved().close_all_windows_on_hold, true);
+});
+
+test("the window count arrives after the apps list and does not clear it", async () => {
+	const pi = await openInspector({ app: "org.mozilla.firefox" });
+	pi.receive("sendToPropertyInspector", { apps: APPS });
+	pi.receive("sendToPropertyInspector", { open_windows: 2, windows_note: null });
+	assert.equal(pi.els.window_count.textContent, "Windows open now: 2");
+	assert.equal(pi.els.app.value, "org.mozilla.firefox");
+	assert.equal(pi.els.app.options.length, 2);
+});
+
+test("an unknown window count shows the reason, and no app shows nothing", async () => {
+	const pi = await openInspector({ app: "org.mozilla.firefox" });
+	pi.receive("sendToPropertyInspector", { open_windows: null, windows_note: "window backend unavailable: kdotool not found" });
+	assert.equal(pi.els.window_count.textContent, "Windows open now: unknown (window backend unavailable: kdotool not found)");
+	pi.receive("sendToPropertyInspector", { open_windows: null, windows_note: null });
+	assert.equal(pi.els.window_count.textContent, "");
+});
+
+test("an older plugin that sends no count leaves the line empty", async () => {
+	const pi = await openInspector({ app: "org.mozilla.firefox" });
+	pi.receive("sendToPropertyInspector", { apps: APPS });
+	assert.equal(pi.els.window_count.textContent, "");
+});
+
+test("picking another app clears the previous app's count", async () => {
+	const pi = await openInspector({ app: "org.gone.App" });
+	pi.receive("sendToPropertyInspector", { apps: APPS });
+	pi.receive("sendToPropertyInspector", { open_windows: 4, windows_note: null });
+	pi.els.app.value = "org.mozilla.firefox";
+	pi.els.app.listeners.change();
+	assert.equal(pi.els.window_count.textContent, "");
 });

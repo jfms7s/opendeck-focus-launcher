@@ -69,6 +69,9 @@ xattr -dr com.apple.quarantine ~/Library/Application\ Support/opendeck/plugins/c
 2. **App** — pick an app from the dropdown. Its `.desktop` file path (the
    `.app` bundle on macOS) is shown underneath for reference. If the saved app is no longer installed it stays
    selected, marked "(not installed)", and the key alerts when pressed.
+   Below it, "Windows open now: N" counts the windows a press would act on
+   (after the Window class and title overrides), updated as you change
+   settings; "unknown" comes with the reason (e.g. no window backend).
    On Linux the list follows your menu: an app you hid (a `Hidden=true` or
    `NoDisplay=true` copy in `~/.local/share/applications`) and entries meant
    for another desktop (`OnlyShowIn=`/`NotShowIn=`) are left out.
@@ -118,8 +121,10 @@ xattr -dr com.apple.quarantine ~/Library/Application\ Support/opendeck/plugins/c
    app resets every override on that key.
 
 Some apps' running windows don't use the class their `.desktop` file
-declares (on macOS the class is always the app's bundle id). Chrome/Chromium PWAs are handled automatically (the key retries
-with the desktop id). For others, such as the Plex snap, find the real class
+declares (on macOS the class is always the app's bundle id). Chrome/Chromium
+PWAs are handled automatically (the key retries with the desktop id). The
+"Windows open now" line under the app shows whether the key finds the app's
+open windows; if it says 0 while the app is open, find the real class
 (`kdotool search --class . getwindowclassname %@` on KDE; on macOS the bundle
 id, `osascript -e 'id of app "Safari"'`) and set it as the
 Window class override.
@@ -167,6 +172,7 @@ outside this repository.
 | 23 | macOS: after an OpenDeck update, row 16's permission still works (else remove and re-add OpenDeck in Accessibility). | n/a | n/a | n/a | not yet run |
 | 24 | Hold set to *Open another window*, app with Extra arguments `--new-window` (e.g. Firefox) and a window open → holding opens one new window; holding twice quickly opens only one. | not yet run | not yet run | not yet run | not yet run |
 | 25 | Hold set to *Open another window* on a single-instance app (e.g. Steam) → holding brings it forward and opens nothing new; a key saved by v0.6 with close-all on shows *Close all windows*. | not yet run | not yet run | not yet run | not yet run |
+| 26 | Open a key's settings with its app running in 2 windows → "Windows open now: 2"; set a Window class that matches nothing → it drops to 0; with the app closed → 0. | not yet run | not yet run | not yet run | not yet run |
 <!-- smoke-checklist:end -->
 
 The plugin log (`~/.local/share/opendeck/logs/plugins/com.jfms7s.focuslauncher.sdPlugin.log`;
