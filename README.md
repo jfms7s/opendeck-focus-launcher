@@ -130,6 +130,16 @@ windows** under Window class (KDE, GNOME and X11; a class the plugin can't
 match is listed but greyed out). On macOS, type the bundle id instead
 (`osascript -e 'id of app "Safari"'`).
 
+## Using a dial
+
+The same action works on a dial (Stream Deck +, or a deck with knobs). A
+press does what a key press does. Turning the dial steps through the app's
+open windows without switching to them: the dial's title shows the window's
+place (`2/3`) and, on KDE, GNOME and X11, its title. Pressing then brings up
+the window shown; holding does the Hold action instead. After the press the
+dial shows the app's name again. On macOS only the place is shown (the
+macOS backend doesn't read window titles).
+
 ## Manual smoke-test checklist
 
 The decision logic and the tool-output parsers are unit-tested, but the real
@@ -175,6 +185,8 @@ outside this repository.
 | 25 | Hold set to *Open another window* on a single-instance app (e.g. Steam) → holding brings it forward and opens nothing new; a key saved by v0.6 with close-all on shows *Close all windows*. | not yet run | not yet run | not yet run | not yet run |
 | 26 | Open a key's settings with its app running in 2 windows → "Windows open now: 2"; set a Window class that matches nothing → it drops to 0; with the app closed → 0. | not yet run | not yet run | not yet run | not yet run |
 | 27 | Key for an app whose windows report another class (e.g. the Plex snap), app open → reopen its settings, pick the window under "Pick from open windows" → Window class is filled, the count goes above 0, and a press focuses it. | not yet run | not yet run | not yet run | n/a |
+| 28 | Dial bound to an app with three windows → turning shows `1/3`, `2/3`, `3/3` with each window's title and switches to none of them; turning back wraps; a press focuses the window shown and the dial shows the app's name again. | not yet run | not yet run | not yet run | not yet run |
+| 29 | Dial: turn to a window, close that window, press → a normal tap (focuses the app's first window); with the app closed, turning shows "no windows" and a press launches it. | not yet run | not yet run | not yet run | not yet run |
 <!-- smoke-checklist:end -->
 
 The plugin log (`~/.local/share/opendeck/logs/plugins/com.jfms7s.focuslauncher.sdPlugin.log`;

@@ -3,11 +3,13 @@
 //! in `decision`, `orchestrate` and `settings`; this file only wires events.
 
 use crate::apps::{AppEntry, Launcher, SystemLauncher};
-use crate::backend::{WindowBackend, WindowClass};
+use crate::backend::{WindowBackend, WindowClass, WindowId};
 use crate::catalog::AppCatalog;
 use crate::decision::{Gesture, HOLD_THRESHOLD, Intent, intent_for, is_hold};
 use crate::icon::IconCache;
-use crate::orchestrate::{self, Context, LaunchGuard, RunOutcome, Severity, report_for};
+use crate::orchestrate::{
+    self, Context, DialPreview, LaunchGuard, RunOutcome, Severity, report_for,
+};
 use crate::settings::{FocusOrLaunchSettings, find_app, resolve_display_name, resolve_icon};
 use async_trait::async_trait;
 use openaction::{Action, Instance, OpenActionResult};
@@ -132,6 +134,10 @@ pub struct FocusOrLaunchAction {
     /// Instances whose property inspector is open, so a settings change
     /// re-sends the window count only to a PI that can show it.
     pi_open: Mutex<HashSet<String>>,
+    /// Dials whose title shows a rotation preview, with the window shown
+    /// (`None`: "no windows"). The next press acts on it and restores the
+    /// key's face.
+    dial_cursors: Mutex<HashMap<String, Option<WindowId>>>,
 }
 
 impl FocusOrLaunchAction {
@@ -144,7 +150,14 @@ impl FocusOrLaunchAction {
             launches: LaunchGuard::default(),
             pressed_at: Mutex::new(HashMap::new()),
             pi_open: Mutex::new(HashSet::new()),
+            dial_cursors: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn dial_cursors(&self) -> std::sync::MutexGuard<'_, HashMap<String, Option<WindowId>>> {
+        self.dial_cursors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn pi_open(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
@@ -252,10 +265,13 @@ impl FocusOrLaunchAction {
 
     /// Shared by `key_up` and `dial_up`, so dials get the same hold
     /// behaviour as keys.
+    /// `chosen` is the window a dial's rotation showed: a tap activates it
+    /// (if it is still there) instead of the usual tap; a hold ignores it.
     async fn press_released(
         &self,
         instance: &Instance,
         settings: &FocusOrLaunchSettings,
+        chosen: Option<WindowId>,
     ) -> OpenActionResult<()> {
         // Removed before the early return below, so the map keeps no stale
         // entry when there is no backend.
@@ -272,7 +288,12 @@ impl FocusOrLaunchAction {
             launcher: self.launcher.as_ref(),
             launches: &self.launches,
         };
-        let outcome = orchestrate::run(&ctx, intent, settings, &apps).await;
+        let outcome = match chosen {
+            Some(id) if intent == Intent::FocusOrLaunch => {
+                orchestrate::activate_chosen(&ctx, settings, &apps, &id).await
+            }
+            _ => orchestrate::run(&ctx, intent, settings, &apps).await,
+        };
         self.report(instance, &outcome).await;
         Ok(())
     }
@@ -301,6 +322,7 @@ impl Action for FocusOrLaunchAction {
     ) -> OpenActionResult<()> {
         self.pressed_at().remove(&instance.instance_id);
         self.pi_open().remove(&instance.instance_id);
+        self.dial_cursors().remove(&instance.instance_id);
         Ok(())
     }
 
@@ -357,7 +379,42 @@ impl Action for FocusOrLaunchAction {
     }
 
     async fn key_up(&self, instance: &Instance, settings: &Self::Settings) -> OpenActionResult<()> {
-        self.press_released(instance, settings).await
+        self.press_released(instance, settings, None).await
+    }
+
+    /// The dial window switcher: each rotate event steps through the app's
+    /// windows (all its ticks at once, one snapshot) and shows the window's
+    /// place and title as the dial's title. It never activates anything;
+    /// the next press does.
+    async fn dial_rotate(
+        &self,
+        instance: &Instance,
+        settings: &Self::Settings,
+        ticks: i16,
+        _pressed: bool,
+    ) -> OpenActionResult<()> {
+        let Some(backend) = self.backend.as_deref() else {
+            self.report(instance, &RunOutcome::NoBackend).await;
+            return Ok(());
+        };
+        let apps = self.catalog.containing(settings.app_id()).await;
+        let cursor = self
+            .dial_cursors()
+            .get(&instance.instance_id)
+            .cloned()
+            .flatten();
+        match orchestrate::dial_preview(backend, settings, &apps, cursor.as_ref(), ticks).await {
+            Ok(preview) => {
+                let title = dial_title(preview.as_ref());
+                self.dial_cursors()
+                    .insert(instance.instance_id.clone(), preview.map(|p| p.id));
+                instance.set_title(Some(title), None).await
+            }
+            Err(outcome) => {
+                self.report(instance, &outcome).await;
+                Ok(())
+            }
+        }
     }
 
     async fn dial_down(
@@ -374,7 +431,38 @@ impl Action for FocusOrLaunchAction {
         instance: &Instance,
         settings: &Self::Settings,
     ) -> OpenActionResult<()> {
-        self.press_released(instance, settings).await
+        let shown = self.dial_cursors().remove(&instance.instance_id);
+        self.press_released(instance, settings, shown.clone().flatten())
+            .await?;
+        if shown.is_some() {
+            // The title showed the preview: back to the app's own face.
+            let apps = self.catalog.containing(settings.app_id()).await;
+            self.apply_visuals(instance, settings, &apps).await?;
+        }
+        Ok(())
+    }
+}
+
+/// Longest window title shown on a dial, in characters.
+const DIAL_TITLE_CHARS: usize = 18;
+
+/// A dial's title while rotating: `"<n>/<count>"`, then the window title
+/// (shortened) on a second line when the backend reads titles.
+fn dial_title(preview: Option<&DialPreview>) -> String {
+    let Some(preview) = preview else {
+        return "no windows".to_string();
+    };
+    let place = format!("{}/{}", preview.position, preview.count);
+    match preview.title.as_deref().map(str::trim) {
+        Some(title) if !title.is_empty() => {
+            let mut short: String = title.chars().take(DIAL_TITLE_CHARS).collect();
+            if title.chars().count() > DIAL_TITLE_CHARS {
+                short.pop();
+                short.push('…');
+            }
+            format!("{place}\n{short}")
+        }
+        _ => place,
     }
 }
 
@@ -405,6 +493,32 @@ fn key_face<'a>(settings: &'a FocusOrLaunchSettings, apps: &'a [AppEntry]) -> Ke
 mod tests {
     use super::*;
     use crate::settings::test_support::{app, settings};
+
+    fn preview(position: usize, count: usize, title: Option<&str>) -> DialPreview {
+        DialPreview {
+            id: WindowId::new("w"),
+            position,
+            count,
+            title: title.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_dial_title_shows_the_place_and_a_short_window_title() {
+        assert_eq!(
+            dial_title(Some(&preview(2, 3, Some("Konsole")))),
+            "2/3\nKonsole"
+        );
+        assert_eq!(dial_title(Some(&preview(1, 1, None))), "1/1");
+        assert_eq!(dial_title(Some(&preview(1, 2, Some("  ")))), "1/2");
+        assert_eq!(dial_title(None), "no windows");
+        let long = dial_title(Some(&preview(1, 2, Some("ansible-management — Konsole"))));
+        assert_eq!(long, "1/2\nansible-managemen…");
+        assert_eq!(
+            long.lines().nth(1).unwrap().chars().count(),
+            DIAL_TITLE_CHARS
+        );
+    }
 
     #[test]
     fn the_picker_list_is_sorted_deduplicated_and_validated() {
