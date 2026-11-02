@@ -393,6 +393,21 @@ mod tests {
     }
 
     #[test]
+    fn release_intent_hold_with_new_window_launches_another_and_a_tap_does_not() {
+        let t0 = Instant::now();
+        let mut s = settings("org.mozilla.firefox", true, true);
+        s.hold_action = Some("new_window".to_string());
+        assert_eq!(
+            release_intent(Some(t0), t0 + HOLD_THRESHOLD * 2, &s),
+            Intent::LaunchAnother
+        );
+        assert_eq!(
+            release_intent(Some(t0), t0 + Duration::from_millis(10), &s),
+            Intent::FocusOrLaunch
+        );
+    }
+
+    #[test]
     fn release_intent_without_a_recorded_press_is_a_tap() {
         assert_eq!(
             release_intent(None, Instant::now(), &close_all_on_hold(true)),

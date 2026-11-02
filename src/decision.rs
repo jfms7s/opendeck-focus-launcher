@@ -11,10 +11,12 @@ pub enum Gesture {
     Hold,
 }
 
-/// What holding the key does, per key.
+/// What holding the key does, per key (the PI's "Hold" select).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HoldAction {
     SameAsTap,
+    /// Launch the app again even when it has windows.
+    NewWindow,
     CloseAll,
 }
 
@@ -22,13 +24,16 @@ pub enum HoldAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Intent {
     FocusOrLaunch,
+    /// Run the app's launch command whatever windows it has.
+    LaunchAnother,
     CloseAll,
 }
 
 pub fn intent_for(gesture: Gesture, hold_action: HoldAction) -> Intent {
     match (gesture, hold_action) {
+        (Gesture::Hold, HoldAction::NewWindow) => Intent::LaunchAnother,
         (Gesture::Hold, HoldAction::CloseAll) => Intent::CloseAll,
-        _ => Intent::FocusOrLaunch,
+        (Gesture::Hold, HoldAction::SameAsTap) | (Gesture::Tap, _) => Intent::FocusOrLaunch,
     }
 }
 
@@ -92,6 +97,21 @@ mod tests {
 
     fn id(s: &str) -> WindowId {
         WindowId::new(s)
+    }
+
+    #[test]
+    fn a_tap_always_focuses_or_launches_and_a_hold_follows_its_action() {
+        for action in [
+            HoldAction::SameAsTap,
+            HoldAction::NewWindow,
+            HoldAction::CloseAll,
+        ] {
+            assert_eq!(intent_for(Gesture::Tap, action), Intent::FocusOrLaunch);
+        }
+        assert_eq!(
+            intent_for(Gesture::Hold, HoldAction::NewWindow),
+            Intent::LaunchAnother
+        );
     }
 
     #[test]

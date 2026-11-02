@@ -20,7 +20,15 @@
 			<h2>Behaviour</h2>
 			<label class="check"><input type="checkbox" id="cycle_windows" checked /> Cycle to the next window if several are open</label>
 			<label class="check"><input type="checkbox" id="minimize_when_focused" checked /> Minimize when already focused</label>
-			<label class="check"><input type="checkbox" id="close_all_windows_on_hold" /> Press and hold to close all windows</label>
+			<div class="field">
+				<label for="hold_action">Hold</label>
+				<select id="hold_action">
+					<option value="same_as_tap">Same as tap</option>
+					<option value="new_window">Open another window</option>
+					<option value="close_all">Close all windows</option>
+				</select>
+				<p class="hint">What holding the key (about half a second) does. "Open another window" runs the launch command, with its Extra arguments, even when the app is open; single-instance apps (and most apps on macOS) just come forward.</p>
+			</div>
 		</section>
 
 		<section class="card">
@@ -67,12 +75,17 @@
 		// FocusOrLaunchSettings (src/settings.rs); a Rust test checks this
 		// table against that struct. `def` is the value used when a stored
 		// setting is missing; `reset` fields are cleared when another app is
-		// picked (overrides are fine-tuning for one app).
+		// picked (overrides are fine-tuning for one app). `hold_action` is
+		// the Hold select; `close_all_windows_on_hold` is the setting it
+		// replaced, which has no control: it seeds the select for keys saved
+		// before `hold_action` existed and is still written, so an older
+		// plugin version keeps close-all keys working.
 		const FIELDS = [
 			{ key: "app", kind: "select", def: null },
 			{ key: "cycle_windows", kind: "bool", def: true },
 			{ key: "minimize_when_focused", kind: "bool", def: true },
-			{ key: "close_all_windows_on_hold", kind: "bool", def: false },
+			{ key: "hold_action", kind: "choice", def: "same_as_tap" },
+			{ key: "close_all_windows_on_hold", kind: "legacy", def: false },
 			{ key: "name_override", kind: "text", def: null, reset: true },
 			{ key: "icon_override", kind: "text", def: null, reset: true },
 			{ key: "class_override", kind: "text", def: null, reset: true },
@@ -125,10 +138,22 @@
 					el(field.key).checked = value === true;
 				} else if (field.kind === "text") {
 					el(field.key).value = value || "";
+				} else if (field.kind === "choice") {
+					el(field.key).value = holdActionFrom(settings);
 				}
 			}
 			savedApp = settings.app || null;
 			renderAppOptions();
+		}
+
+		// The Hold select's value: the stored `hold_action`, else the old
+		// boolean (true meant close all). Mirrors `hold_action()` in
+		// src/settings.rs; an unknown value shows as "Same as tap".
+		function holdActionFrom(settings) {
+			const stored = settings.hold_action;
+			if (stored === "same_as_tap" || stored === "new_window" || stored === "close_all") return stored;
+			if (typeof stored === "string" && stored.trim() !== "") return "same_as_tap";
+			return settings.close_all_windows_on_hold === true ? "close_all" : "same_as_tap";
 		}
 
 		function populateApps(newApps) {
@@ -179,6 +204,10 @@
 					settings[field.key] = savedApp;
 				} else if (field.kind === "bool") {
 					settings[field.key] = el(field.key).checked;
+				} else if (field.kind === "choice") {
+					settings[field.key] = el(field.key).value || field.def;
+				} else if (field.kind === "legacy") {
+					settings[field.key] = el("hold_action").value === "close_all";
 				} else {
 					const value = el(field.key).value.trim();
 					settings[field.key] = value === "" ? null : value;
@@ -189,7 +218,7 @@
 
 		el("app").addEventListener("change", onAppChanged);
 		for (const field of FIELDS) {
-			if (field.kind !== "select") el(field.key).addEventListener("change", sendSettings);
+			if (field.kind !== "select" && field.kind !== "legacy") el(field.key).addEventListener("change", sendSettings);
 		}
 	</script>
 </body>

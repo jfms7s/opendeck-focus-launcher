@@ -77,9 +77,17 @@ xattr -dr com.apple.quarantine ~/Library/Application\ Support/opendeck/plugins/c
    above. Unchecking the first means a repeat press does nothing (instead of
    cycling) once the app has several windows open and one is focused;
    unchecking the second means a repeat press does nothing (instead of
-   minimizing) when the app's single window is already focused. Check "Press
-   and hold to close all windows" to make holding the key or dial (past
-   ~500 ms) close every window of that app instead. Off by default.
+   minimizing) when the app's single window is already focused. **Hold**
+   sets what holding the key or dial (past ~500 ms) does: *Same as tap*
+   (the default), *Open another window* (runs the app's launch command, with
+   its Extra arguments, even when it already has windows; a second hold
+   within 4 s does nothing while the first is starting), or *Close all
+   windows* (closes every window of that app). *Open another window* can't
+   do more than the app's own command: a single-instance app such as Steam
+   just comes forward, and on macOS (`open -b`) a running app does the same
+   unless a Command override opens a new window. Keys saved by an
+   older version with "Press and hold to close all windows" checked open as
+   *Close all windows*.
 4. **Appearance & matching** and **Launch** — optional overrides for the
    selected app. Each field shows the app's own value as its placeholder and
    only takes effect once you type something in it:
@@ -95,7 +103,7 @@ xattr -dr com.apple.quarantine ~/Library/Application\ Support/opendeck/plugins/c
      override.
    - **Window title contains** — only the app's windows whose title contains
      this text (ignoring case) belong to the key: a press focuses and cycles
-     among those, holding (with close-all on) closes only those, and with none
+     among those, holding (with Hold set to *Close all windows*) closes only those, and with none
      open the key launches. Combine it with **Extra arguments** to open
      exactly that window, e.g. title `Grafana` with arguments
      `--new-window https://grafana.example`. Titles change with the open tab
@@ -141,9 +149,9 @@ outside this repository.
 | 5 | App focused, three windows, cycling on → three presses visit all three, wrapping. | not yet run | not yet run | not yet run | not yet run |
 | 6 | Cycling off, app focused, several windows → press does nothing. | not yet run | not yet run | not yet run | not yet run |
 | 7 | Minimize-when-focused off, app focused, one window → press does nothing. | not yet run | not yet run | not yet run | not yet run |
-| 8 | Close-all-on-hold on, app has several windows, plus a similarly named app open (e.g. Firefox and Firefox ESR) → holding closes only the app's own windows; a tap still focuses/cycles/minimizes. | not yet run | not yet run | not yet run | not yet run |
-| 9 | Close-all-on-hold off → holding does the same as a tap. | not yet run | not yet run | not yet run | not yet run |
-| 10 | Close-all-on-hold on a dial press → same as on a key. | not yet run | not yet run | not yet run | not yet run |
+| 8 | Hold set to *Close all windows*, app has several windows, plus a similarly named app open (e.g. Firefox and Firefox ESR) → holding closes only the app's own windows; a tap still focuses/cycles/minimizes. | not yet run | not yet run | not yet run | not yet run |
+| 9 | Hold set to *Same as tap* → holding does the same as a tap. | not yet run | not yet run | not yet run | not yet run |
+| 10 | Hold set to *Close all windows*, on a dial press → same as on a key. | not yet run | not yet run | not yet run | not yet run |
 | 11 | App with a reverse-DNS class (e.g. `org.kde.kate`) → focuses instead of relaunching. | not yet run | not yet run | not yet run | not yet run |
 | 12 | Selecting an app sets the key's title and icon. | not yet run | not yet run | not yet run | not yet run |
 | 13 | Name/Icon/Window class/Command/Extra arguments overrides change the title, icon, matching and launch; clearing them reverts. | not yet run | not yet run | not yet run | not yet run |
@@ -157,6 +165,8 @@ outside this repository.
 | 21 | Two windows of one app with different titles, a key with "Window title contains" set to text in one title → press focuses only that window; change the filter to text in neither title → press launches (with its Extra arguments). | not yet run | not yet run | not yet run | n/a |
 | 22 | An app removed after the key was set up (macOS: delete it from /Applications and press within a minute; Linux: OpenDeck installed as a Flatpak, the app's host binary removed) → press alerts, and a second press alerts again instead of doing nothing. | not yet run | not yet run | not yet run | not yet run |
 | 23 | macOS: after an OpenDeck update, row 16's permission still works (else remove and re-add OpenDeck in Accessibility). | n/a | n/a | n/a | not yet run |
+| 24 | Hold set to *Open another window*, app with Extra arguments `--new-window` (e.g. Firefox) and a window open → holding opens one new window; holding twice quickly opens only one. | not yet run | not yet run | not yet run | not yet run |
+| 25 | Hold set to *Open another window* on a single-instance app (e.g. Steam) → holding brings it forward and opens nothing new; a key saved by v0.6 with close-all on shows *Close all windows*. | not yet run | not yet run | not yet run | not yet run |
 <!-- smoke-checklist:end -->
 
 The plugin log (`~/.local/share/opendeck/logs/plugins/com.jfms7s.focuslauncher.sdPlugin.log`;
