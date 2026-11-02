@@ -27,8 +27,11 @@ new process, even when the app is already open.
   minimising and closing windows need the Accessibility permission for
   OpenDeck: macOS asks the first time, or allow it in **System Settings ›
   Privacy & Security › Accessibility**. Launching an app that isn't
-  running works without it. Icons come from the app bundle (`.icns`, converted
-  with the built-in `sips` and cached in `~/Library/Caches/opendeck-focus-launcher/`).
+  running works without it. After updating OpenDeck, if running apps' keys
+  start alerting, remove OpenDeck from Accessibility and add it again (macOS
+  ties the permission to OpenDeck's signature). Icons come from the app
+  bundle (`.icns`, converted with the built-in `sips` and cached in
+  `~/Library/Caches/opendeck-focus-launcher/`).
 
 Other Wayland compositors (sway, Hyprland, niri, ...) are not supported: their
 native windows are invisible to `wmctrl`, so the plugin does not guess. If no
@@ -63,8 +66,8 @@ xattr -dr com.apple.quarantine ~/Library/Application\ Support/opendeck/plugins/c
 ## Using a key
 
 1. Add a **Focus or Launch** key in OpenDeck.
-2. **App** — pick an app from the dropdown. Its `.desktop` file path is shown
-   underneath for reference. If the saved app is no longer installed it stays
+2. **App** — pick an app from the dropdown. Its `.desktop` file path (the
+   `.app` bundle on macOS) is shown underneath for reference. If the saved app is no longer installed it stays
    selected, marked "(not installed)", and the key alerts when pressed.
    On Linux the list follows your menu: an app you hid (a `Hidden=true` or
    `NoDisplay=true` copy in `~/.local/share/applications`) and entries meant
@@ -82,9 +85,11 @@ xattr -dr com.apple.quarantine ~/Library/Application\ Support/opendeck/plugins/c
    only takes effect once you type something in it:
    - **Name** — the key's title.
    - **Icon name** — an icon theme name, or an absolute path to an image, to
-     show instead of the app's own icon.
+     show instead of the app's own icon (on macOS only an absolute path works,
+     to an image or an `.icns`).
    - **Window class** — only needed if the app's windows report a different
-     class than its `.desktop` file declares (letters, digits, spaces and
+     class than the app declares (its `.desktop` file's `StartupWMClass` or
+     id; the bundle id on macOS) (letters, digits, spaces and
      `. _ - +` only). On the X11 backend (wmctrl) a class can't contain
      spaces, so a Steam game whose class is its name needs a `steam_app_<n>`
      override.
@@ -105,7 +110,7 @@ xattr -dr com.apple.quarantine ~/Library/Application\ Support/opendeck/plugins/c
    app resets every override on that key.
 
 Some apps' running windows don't use the class their `.desktop` file
-declares. Chrome/Chromium PWAs are handled automatically (the key retries
+declares (on macOS the class is always the app's bundle id). Chrome/Chromium PWAs are handled automatically (the key retries
 with the desktop id). For others, such as the Plex snap, find the real class
 (`kdotool search --class . getwindowclassname %@` on KDE; on macOS the bundle
 id, `osascript -e 'id of app "Safari"'`) and set it as the
@@ -151,6 +156,7 @@ outside this repository.
 | 20 | Make the backend hang (a `kdotool`, or `wmctrl` on X11, first on the PATH that runs `sleep 30`) → press alerts after about 3 s and launches nothing; another key works right after. | not yet run | n/a | not yet run | n/a |
 | 21 | Two windows of one app with different titles, a key with "Window title contains" set to text in one title → press focuses only that window; change the filter to text in neither title → press launches (with its Extra arguments). | not yet run | not yet run | not yet run | n/a |
 | 22 | An app removed after the key was set up (macOS: delete it from /Applications and press within a minute; Linux: OpenDeck installed as a Flatpak, the app's host binary removed) → press alerts, and a second press alerts again instead of doing nothing. | not yet run | not yet run | not yet run | not yet run |
+| 23 | macOS: after an OpenDeck update, row 16's permission still works (else remove and re-add OpenDeck in Accessibility). | n/a | n/a | n/a | not yet run |
 <!-- smoke-checklist:end -->
 
 The plugin log (`~/.local/share/opendeck/logs/plugins/com.jfms7s.focuslauncher.sdPlugin.log`;

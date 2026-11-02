@@ -66,16 +66,18 @@ pub struct WindowSnapshot {
 
 /// The contract every backend must meet. `decide()` and the orchestration
 /// tests rely on it, and the fake backend in the tests cannot check it, so
-/// each adapter's parser tests do (see `contract_tests` below).
+/// each adapter's parser tests do (see `NEAR_MISSES` below).
 ///
 /// - **Matching:** `list_windows` returns exactly the windows for which
 ///   `WindowClass::matches` holds against the window's class or instance
 ///   name: exact, ASCII-case-insensitive equality. Never substring, prefix
 ///   or regex matching. A backend that can only take a pattern must use
-///   `WindowClass::anchored_regex`.
+///   `WindowClass::anchored_regex`. On macOS the candidate is the bundle id
+///   of the window's owning app (`mac_ids::matching_pids`).
 /// - **Ordering:** a stable order that does not change when a window is
 ///   focused or raised (creation / mapping order: `KWin` `windowList()`,
-///   `_NET_CLIENT_LIST`, Window Calls ids sorted ascending). Cycling with
+///   `_NET_CLIENT_LIST`, Window Calls ids sorted ascending; CGWindowID
+///   ascending on macOS, `mac_ids::ordered`). Cycling with
 ///   `(pos + 1) % len` then visits every window, and a background press
 ///   brings up `windows[0]`, the oldest window.
 /// - **Identity:** ids from `list_windows` and `active_window` use the same
