@@ -2,7 +2,7 @@
 //! bundle mapping and window order. Kept apart from the AX calls in
 //! `macos.rs` so the Linux test suite covers it.
 
-use super::WindowId;
+use super::{WindowClass, WindowId};
 use std::path::{Path, PathBuf};
 
 /// A window as `<pid>/<CGWindowID>`: the pid finds its app again, the
@@ -37,6 +37,26 @@ pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
     .then(|| bundle.to_path_buf())
 }
 
+/// The pids among `processes` (pid, executable path) that run an app whose
+/// bundle id matches `class`: the macOS matching rule, the same exact,
+/// case-insensitive comparison every other backend uses. `bundle_id` reads a
+/// bundle's id (`None`: not an app with one).
+pub fn matching_pids(
+    processes: impl IntoIterator<Item = (i32, PathBuf)>,
+    bundle_id: impl Fn(&Path) -> Option<String>,
+    class: &WindowClass,
+) -> Vec<i32> {
+    processes
+        .into_iter()
+        .filter(|(_, exe)| {
+            bundle_of(exe)
+                .and_then(|b| bundle_id(&b))
+                .is_some_and(|id| class.matches(&id))
+        })
+        .map(|(pid, _)| pid)
+        .collect()
+}
+
 /// `(window number, pid)` pairs as ids, oldest first: window numbers grow
 /// as windows are created, which gives the backend contract's stable order.
 pub fn ordered(mut windows: Vec<(u32, i32)>) -> Vec<WindowId> {
@@ -50,6 +70,45 @@ pub fn ordered(mut windows: Vec<(u32, i32)>) -> Vec<WindowId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::NEAR_MISSES;
+
+    /// A process running `/Applications/<id>.app/Contents/MacOS/app`, whose
+    /// bundle id is taken from the bundle name by `id_from_bundle`.
+    fn app_process(pid: i32, id: &str) -> (i32, PathBuf) {
+        (
+            pid,
+            PathBuf::from(format!("/Applications/{id}.app/Contents/MacOS/app")),
+        )
+    }
+
+    fn id_from_bundle(bundle: &Path) -> Option<String> {
+        Some(bundle.file_stem()?.to_str()?.to_string())
+    }
+
+    #[test]
+    fn contract_near_misses_do_not_match_a_bundle_id() {
+        for (window_class, wanted) in NEAR_MISSES {
+            let class = WindowClass::parse(wanted).unwrap();
+            let pids = matching_pids([app_process(7, window_class)], id_from_bundle, &class);
+            assert!(pids.is_empty(), "{wanted} must not match {window_class}");
+        }
+    }
+
+    #[test]
+    fn a_bundle_id_matches_exactly_ignoring_case() {
+        let class = WindowClass::parse("com.apple.calculator").unwrap();
+        let processes = [
+            app_process(1, "com.apple.Calculator"),
+            app_process(2, "com.apple.calculator.helper"),
+            (3, PathBuf::from("/usr/bin/com.apple.calculator")),
+            app_process(4, "com.apple.calculator"),
+        ];
+        assert_eq!(matching_pids(processes, id_from_bundle, &class), [1, 4]);
+        // A bundle without an id never matches.
+        assert!(
+            matching_pids([app_process(5, "com.apple.calculator")], |_| None, &class).is_empty()
+        );
+    }
 
     #[test]
     fn ids_carry_the_pid_and_the_window_number() {

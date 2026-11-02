@@ -9,7 +9,7 @@
 //! plugin (OpenDeck). Without it, launching still works: an app with no
 //! running instance simply has no windows.
 
-use super::mac_ids::{bundle_of, ordered, parse_window_id, window_id};
+use super::mac_ids::{matching_pids, ordered, parse_window_id, window_id};
 use super::{BackendError, WindowBackend, WindowClass, WindowId};
 use async_trait::async_trait;
 use objc2_application_services::{
@@ -192,15 +192,7 @@ impl MacAccessibilityBackend {
 
     /// The pids of every running instance of `class` (a bundle id).
     fn pids(&self, class: &WindowClass) -> Vec<i32> {
-        processes()
-            .into_iter()
-            .filter(|(_, exe)| {
-                bundle_of(exe)
-                    .and_then(|b| self.bundle_id(&b))
-                    .is_some_and(|id| class.matches(&id))
-            })
-            .map(|(pid, _)| pid)
-            .collect()
+        matching_pids(processes(), |b| self.bundle_id(b), class)
     }
 
     fn list_blocking(&self, class: &WindowClass) -> Result<Vec<WindowId>, BackendError> {
@@ -357,6 +349,84 @@ mod tests {
                 .any(|a| a.id.eq_ignore_ascii_case("com.apple.calculator")),
             "{} apps, no Calculator",
             apps.len()
+        );
+        assert!(
+            apps.iter().any(|a| a.icon.is_some()),
+            "{} apps, none with an icon",
+            apps.len()
+        );
+    }
+
+    const CALCULATOR: &str = "com.apple.calculator";
+
+    /// Quits Calculator when dropped, so a failed assert still cleans up.
+    struct QuitCalculator;
+
+    impl Drop for QuitCalculator {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("osascript")
+                .args(["-e", "quit app \"Calculator\""])
+                .output();
+        }
+    }
+
+    /// Runs on the macOS CI runner against a real running app. With the
+    /// Accessibility permission this walks the AX path (`standard_windows`,
+    /// `_AXUIElementGetWindow`, `ordered`); without it, `pids()` still has to
+    /// find the running bundle before the permission check refuses. Either
+    /// is accepted; the output says which one ran.
+    #[tokio::test]
+    async fn a_running_app_is_listed_or_reports_the_missing_permission() {
+        let _quit = QuitCalculator;
+        let opened = std::process::Command::new("open")
+            .args(["-g", "-b", CALCULATOR])
+            .status()
+            .expect("run open");
+        assert!(opened.success(), "open -g -b {CALCULATOR}: {opened}");
+        let backend = Arc::new(MacAccessibilityBackend::default());
+        let class = WindowClass::parse(CALCULATOR).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let last = loop {
+            let result = backend.list_windows(&class).await;
+            match &result {
+                Ok(windows) if !windows.is_empty() => break result,
+                Err(BackendError::Unavailable(_)) => break result,
+                _ if std::time::Instant::now() >= deadline => break result,
+                _ => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
+            }
+        };
+        match last {
+            Ok(windows) if !windows.is_empty() => {
+                println!(
+                    "AX path ran: Calculator has {} window(s): {windows:?}",
+                    windows.len()
+                );
+                assert!(windows.iter().all(|w| parse_window_id(w).is_some()));
+            }
+            Err(BackendError::Unavailable(msg)) if msg == NEEDS_PERMISSION => {
+                println!(
+                    "permission branch ran: Calculator is running, Accessibility is not granted"
+                );
+            }
+            other => panic!("expected Calculator's windows or the permission error, got {other:?}"),
+        }
+    }
+
+    /// Converts a real app's `.icns` with `sips`.
+    #[test]
+    fn an_app_icon_converts_to_png() {
+        let apps = crate::apps::list_installed_apps();
+        let calculator = apps
+            .iter()
+            .find(|a| a.id.eq_ignore_ascii_case(CALCULATOR))
+            .expect("Calculator is installed");
+        let icns = calculator.icon.as_deref().expect("Calculator has an icon");
+        let png = crate::icon::icns_to_png(Path::new(icns)).expect("sips converts the icon");
+        let bytes = std::fs::read(&png).unwrap();
+        assert!(
+            bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "{} is not a PNG",
+            png.display()
         );
     }
 }

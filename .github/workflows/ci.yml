@@ -91,7 +91,9 @@ jobs:
         with:
           node-version: 24
       - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
+      # --show-output: the macOS backend tests print which path they took
+      # (AX windows, or the missing Accessibility permission).
+      - run: cargo test --locked -- --show-output
       - name: Property inspector tests
         run: node --test tests/*.test.mjs
       - run: cargo build --release --locked
