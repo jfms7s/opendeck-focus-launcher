@@ -317,6 +317,19 @@ async fn apply_title_filter(
     Ok(true)
 }
 
+/// How many windows a press on this key would see right now (class
+/// override, id fallback and title filter included), for the property
+/// inspector. `Err` is the outcome a press would report instead.
+pub async fn matching_window_count(
+    backend: &dyn WindowBackend,
+    settings: &FocusOrLaunchSettings,
+    apps: &[AppEntry],
+) -> Result<usize, RunOutcome> {
+    target_snapshot(backend, settings, apps)
+        .await
+        .map(|target| target.snapshot.windows.len())
+}
+
 /// Runs one press for `intent` and reports what happened.
 pub async fn run(
     ctx: &Context<'_>,
@@ -739,6 +752,56 @@ mod tests {
             RunOutcome::Activated(_) | RunOutcome::Minimized(_) | RunOutcome::NoOp
         ));
         assert!(!h.launches.is_pending("org.mozilla.firefox", Instant::now()));
+    }
+
+    #[tokio::test]
+    async fn the_window_count_is_what_a_press_would_see() {
+        let apps = firefox_apps();
+        let backend = with_windows("firefox", &["w1", "w2"]);
+        assert_eq!(
+            matching_window_count(&backend, &firefox(), &apps).await,
+            Ok(2)
+        );
+        assert_eq!(
+            matching_window_count(&RecordingFakeBackend::default(), &firefox(), &apps).await,
+            Ok(0)
+        );
+        // The title filter narrows the count as it narrows a press.
+        assert_eq!(
+            matching_window_count(
+                &with_titled_windows(GRAFANA_AND_GITHUB),
+                &firefox_titled("github"),
+                &apps
+            )
+            .await,
+            Ok(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_window_count_follows_the_id_fallback() {
+        // A Chrome PWA: its windows report the desktop id, not the declared class.
+        let apps = vec![app("chrome-abc-Default", "crx_abc")];
+        let backend = with_windows("chrome-abc-Default", &["w1"]);
+        let s = settings("chrome-abc-Default", true, true);
+        assert_eq!(matching_window_count(&backend, &s, &apps).await, Ok(1));
+    }
+
+    #[tokio::test]
+    async fn the_window_count_reports_what_a_press_would_report() {
+        let apps = firefox_apps();
+        let backend = RecordingFakeBackend {
+            list_err: Some(BackendError::Unavailable("kdotool not found".into())),
+            ..Default::default()
+        };
+        assert_eq!(
+            matching_window_count(&backend, &firefox(), &apps).await,
+            Err(RunOutcome::BackendUnavailable("kdotool not found".into()))
+        );
+        assert_eq!(
+            matching_window_count(&backend, &FocusOrLaunchSettings::default(), &apps).await,
+            Err(RunOutcome::NoAppSelected)
+        );
     }
 
     #[tokio::test]

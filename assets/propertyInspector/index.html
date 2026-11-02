@@ -13,6 +13,7 @@
 				<label for="app">Application</label>
 				<select id="app"><option value="">Select an app&hellip;</option></select>
 				<p id="path" class="hint mono"></p>
+				<p id="window_count" class="hint"></p>
 			</div>
 		</section>
 
@@ -123,7 +124,10 @@
 			websocket.onmessage = (event) => {
 				const message = JSON.parse(event.data);
 				if (message.event === "sendToPropertyInspector") {
-					populateApps(message.payload.apps || []);
+					// Two messages: the apps list, then the window count.
+					const payload = message.payload || {};
+					if (Array.isArray(payload.apps)) populateApps(payload.apps);
+					if ("open_windows" in payload) renderWindowCount(payload);
 				} else if (message.event === "didReceiveSettings") {
 					applySettings(message.payload.settings || {});
 				}
@@ -154,6 +158,19 @@
 			if (stored === "same_as_tap" || stored === "new_window" || stored === "close_all") return stored;
 			if (typeof stored === "string" && stored.trim() !== "") return "same_as_tap";
 			return settings.close_all_windows_on_hold === true ? "close_all" : "same_as_tap";
+		}
+
+		// "Windows open now: N" for what a press would match, "unknown" with
+		// the plugin's reason when it can't tell, nothing with no app.
+		function renderWindowCount(payload) {
+			const n = payload.open_windows;
+			if (typeof n === "number") {
+				el("window_count").textContent = `Windows open now: ${n}`;
+			} else if (payload.windows_note) {
+				el("window_count").textContent = `Windows open now: unknown (${payload.windows_note})`;
+			} else {
+				el("window_count").textContent = "";
+			}
 		}
 
 		function populateApps(newApps) {
@@ -190,6 +207,8 @@
 
 		function onAppChanged() {
 			savedApp = el("app").value || null;
+			// The count was for the previous app; the plugin sends a new one.
+			el("window_count").textContent = "";
 			for (const field of FIELDS) {
 				if (field.reset) el(field.key).value = "";
 			}
