@@ -149,6 +149,7 @@ outside this repository.
 | 19 | macOS: an app with 3 windows → repeated presses visit each window in turn (cycling doesn't get stuck on two). | n/a | n/a | n/a | not yet run |
 | 20 | Make the backend hang (a `kdotool`, or `wmctrl` on X11, first on the PATH that runs `sleep 30`) → press alerts after about 3 s and launches nothing; another key works right after. | not yet run | n/a | not yet run | n/a |
 | 21 | Two windows of one app with different titles, a key with "Window title contains" set to text in one title → press focuses only that window; change the filter to text in neither title → press launches (with its Extra arguments). | not yet run | not yet run | not yet run | n/a |
+| 22 | An app removed after the key was set up (macOS: delete it from /Applications and press within a minute; Linux: OpenDeck installed as a Flatpak, the app's host binary removed) → press alerts, and a second press alerts again instead of doing nothing. | not yet run | not yet run | not yet run | not yet run |
 <!-- smoke-checklist:end -->
 
 The plugin log (`~/.local/share/opendeck/logs/plugins/com.jfms7s.focuslauncher.sdPlugin.log`;

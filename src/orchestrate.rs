@@ -347,7 +347,7 @@ pub async fn run(
     };
 
     match decision {
-        Decision::Launch => launch(ctx, settings, entry, &guard_key),
+        Decision::Launch => launch(ctx, settings, entry, &guard_key).await,
         Decision::Activate(id) => match ctx.backend.activate(&id).await {
             Ok(()) => RunOutcome::Activated(id),
             Err(e) => RunOutcome::ActivateFailed(id, e.to_string()),
@@ -361,7 +361,7 @@ pub async fn run(
     }
 }
 
-fn launch(
+async fn launch(
     ctx: &Context<'_>,
     settings: &FocusOrLaunchSettings,
     entry: &AppEntry,
@@ -379,7 +379,7 @@ fn launch(
         Ok(argv) => argv,
         Err(e) => return RunOutcome::LaunchFailed(format!("{}: {e}", entry.id)),
     };
-    match ctx.launcher.launch(&argv) {
+    match ctx.launcher.launch(&argv).await {
         Ok(()) => {
             ctx.launches.record(guard_key, now);
             RunOutcome::Launched(argv)
@@ -551,8 +551,9 @@ mod tests {
         fail: bool,
     }
 
+    #[async_trait]
     impl Launcher for RecordingLauncher {
-        fn launch(&self, argv: &[String]) -> std::io::Result<()> {
+        async fn launch(&self, argv: &[String]) -> std::io::Result<()> {
             if self.fail {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -655,6 +656,24 @@ mod tests {
             matches!(outcome, RunOutcome::LaunchFailed(_)),
             "{outcome:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_failed_launch_does_not_arm_the_launch_guard() {
+        // A wrapper that exits non-zero (`open -b` with a removed bundle id)
+        // fails the launch; the next press must try again and alert again,
+        // not report a cold start in progress.
+        let mut h = Harness::new(RecordingFakeBackend::default());
+        h.launcher.fail = true;
+        let apps = firefox_apps();
+        for _ in 0..2 {
+            let outcome = h.tap(&firefox(), &apps).await;
+            assert!(
+                matches!(outcome, RunOutcome::LaunchFailed(_)),
+                "{outcome:?}"
+            );
+        }
+        assert!(!h.launches.is_pending("org.mozilla.firefox", Instant::now()));
     }
 
     #[tokio::test]

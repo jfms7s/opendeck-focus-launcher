@@ -9,6 +9,7 @@ use freedesktop_desktop_entry::{DesktopEntry, Iter, default_paths};
 #[cfg(not(target_os = "macos"))]
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -381,8 +382,9 @@ fn build_launch_argv_on(
 
 /// Starts a process from an argv. A trait so orchestration tests can record
 /// launches instead of spawning anything.
+#[async_trait::async_trait]
 pub trait Launcher: Send + Sync {
-    fn launch(&self, argv: &[String]) -> std::io::Result<()>;
+    async fn launch(&self, argv: &[String]) -> std::io::Result<()>;
 }
 
 /// Spawns directly, or through `flatpak-spawn --host` when the plugin runs
@@ -400,33 +402,83 @@ fn host_argv(argv: &[String], sandboxed: bool) -> Vec<String> {
     }
 }
 
+/// How long to wait for `open` (macOS) to exit before calling a launch done.
+/// `open -b` asks LaunchServices and exits within a fraction of a second
+/// whether or not the app starts, with a non-zero status for an unknown
+/// bundle id; 2 s leaves room for a slow LaunchServices lookup.
+const OPEN_EARLY_EXIT: Duration = Duration::from_secs(2);
+
+/// How long to wait for `flatpak-spawn --host` to exit. It keeps running for
+/// as long as the host process does, but exits quickly when the host command
+/// can't be started. Kept short: presses are handled serially, so every other
+/// key waits this long behind a sandboxed launch.
+const FLATPAK_SPAWN_EARLY_EXIT: Duration = Duration::from_millis(300);
+
+/// The window in which a wrapper's non-zero exit counts as a failed launch.
+/// Wrappers always spawn, so their failure shows only in the exit status;
+/// anything else is launched directly and a missing binary is a spawn error,
+/// so it gets no wait.
+fn early_exit_window(program: &str) -> Option<Duration> {
+    match program {
+        "open" => Some(OPEN_EARLY_EXIT),
+        "flatpak-spawn" => Some(FLATPAK_SPAWN_EARLY_EXIT),
+        _ => None,
+    }
+}
+
+/// Spawns `program` and, with an `early_exit` window, waits up to that long:
+/// a non-zero exit within it is an error. A child that exits 0, or is still
+/// running when the window ends, counts as launched. A still-running child is
+/// reaped in the background, which logs a later failing exit.
+async fn spawn_checked(
+    program: &str,
+    args: &[String],
+    early_exit: Option<Duration>,
+) -> std::io::Result<()> {
+    let mut child = tokio::process::Command::new(program)
+        .args(args)
+        // The app's own output stays out of the plugin log, which may
+        // be shared in bug reports; a failing exit is still logged below.
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| std::io::Error::new(e.kind(), format!("{program}: {e}")))?;
+    if let Some(window) = early_exit
+        && let Ok(waited) = tokio::time::timeout(window, child.wait()).await
+    {
+        let status = waited.map_err(|e| {
+            std::io::Error::new(e.kind(), format!("could not wait for {program}: {e}"))
+        })?;
+        return if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "{program} exited with {status}"
+            )))
+        };
+    }
+    // Reap the child when it exits instead of leaving that to tokio's
+    // orphan reaper, and log a failing exit since nothing else would report it.
+    let program = program.to_string();
+    tokio::spawn(async move {
+        match child.wait().await {
+            Ok(status) if !status.success() => log::warn!("{program} exited with {status}"),
+            Ok(_) => {}
+            Err(e) => log::warn!("could not wait for {program}: {e}"),
+        }
+    });
+    Ok(())
+}
+
+#[async_trait::async_trait]
 impl Launcher for SystemLauncher {
-    fn launch(&self, argv: &[String]) -> std::io::Result<()> {
+    async fn launch(&self, argv: &[String]) -> std::io::Result<()> {
         let full = host_argv(argv, std::env::var_os("FLATPAK_ID").is_some());
         let (program, rest) = full
             .split_first()
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty argv"))?;
-        let mut child = tokio::process::Command::new(program)
-            .args(rest)
-            // The app's own output stays out of the plugin log, which may
-            // be shared in bug reports; a failing exit is still logged below.
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| std::io::Error::new(e.kind(), format!("{program}: {e}")))?;
-        // Reap the child when it exits instead of leaving that to tokio's
-        // orphan reaper, and log a failing exit (e.g. `flatpak-spawn` not
-        // finding the host binary) since nothing else would report it.
-        let program = program.clone();
-        tokio::spawn(async move {
-            match child.wait().await {
-                Ok(status) if !status.success() => log::warn!("{program} exited with {status}"),
-                Ok(_) => {}
-                Err(e) => log::warn!("could not wait for {program}: {e}"),
-            }
-        });
-        Ok(())
+        spawn_checked(program, rest, early_exit_window(program)).await
     }
 }
 
@@ -725,9 +777,71 @@ mod tests {
 
     #[tokio::test]
     async fn launching_a_missing_binary_fails_instead_of_reporting_success() {
-        let result = SystemLauncher.launch(&["opendeck-focus-launcher-no-such-binary".to_string()]);
+        let result = SystemLauncher
+            .launch(&["opendeck-focus-launcher-no-such-binary".to_string()])
+            .await;
         let err = result.unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_wrapper_exiting_non_zero_in_its_window_is_a_failed_launch() {
+        let err = spawn_checked("sh", &args(&["-c", "exit 3"]), Some(Duration::from_secs(1)))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("exited with"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_wrapper_still_running_after_its_window_counts_as_launched() {
+        let started = std::time::Instant::now();
+        let result = spawn_checked(
+            "sh",
+            &args(&["-c", "sleep 5"]),
+            Some(Duration::from_millis(100)),
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn a_wrapper_exiting_zero_counts_as_launched() {
+        assert!(
+            spawn_checked("true", &[], Some(Duration::from_secs(1)))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_direct_launch_does_not_wait_for_the_exit_status() {
+        // No window: a program that fails right away still counts as launched
+        // (its exit is only logged), and the call returns without waiting.
+        let started = std::time::Instant::now();
+        assert!(
+            spawn_checked("sh", &args(&["-c", "sleep 1; exit 3"]), None)
+                .await
+                .is_ok()
+        );
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn only_the_wrappers_get_an_early_exit_window() {
+        assert_eq!(early_exit_window("open"), Some(OPEN_EARLY_EXIT));
+        assert_eq!(
+            early_exit_window("flatpak-spawn"),
+            Some(FLATPAK_SPAWN_EARLY_EXIT)
+        );
+        assert!(OPEN_EARLY_EXIT <= Duration::from_secs(2));
+        assert!(FLATPAK_SPAWN_EARLY_EXIT <= Duration::from_millis(300));
+        assert_eq!(early_exit_window("firefox"), None);
+        assert_eq!(early_exit_window("/usr/bin/open"), None);
     }
 
     #[test]
