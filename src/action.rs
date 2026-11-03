@@ -255,6 +255,12 @@ impl FocusOrLaunchAction {
                 None
             }
         };
+        // Held until the key is re-tracked or untracked, so no state paint
+        // from a tick already under way lands on top of the plain icon.
+        let _painting = match &self.watcher {
+            Some(watcher) => Some(watcher.paint_guard().await),
+            None => None,
+        };
         match &uri {
             Some(uri) => instance.set_image(Some(uri.as_ref()), None).await?,
             None => instance.set_image(None::<String>, None).await?,

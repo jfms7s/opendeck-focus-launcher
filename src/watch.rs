@@ -12,7 +12,7 @@ use crate::backend::{WindowBackend, WindowClass, WindowSnapshot};
 use crate::badge;
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Once, PoisonError};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -57,7 +57,9 @@ pub fn key_state(primary: &WindowSnapshot, fallback: Option<&WindowSnapshot>) ->
 /// Sets a key's image; the production one goes through `openaction`.
 #[async_trait]
 pub trait Painter: Send + Sync {
-    async fn paint(&self, instance_id: &str, image: &str);
+    /// Returns whether the image was sent; a failed paint is retried on
+    /// the next tick. An instance that has gone counts as painted.
+    async fn paint(&self, instance_id: &str, image: &str) -> bool;
 }
 
 /// Paints through `openaction`; an instance that has gone is skipped.
@@ -65,12 +67,16 @@ pub struct DeckPainter;
 
 #[async_trait]
 impl Painter for DeckPainter {
-    async fn paint(&self, instance_id: &str, image: &str) {
+    async fn paint(&self, instance_id: &str, image: &str) -> bool {
         let Some(instance) = openaction::get_instance(instance_id.to_string()).await else {
-            return;
+            return true;
         };
-        if let Err(e) = instance.set_image(Some(image), None).await {
-            log::warn!("could not update a key's running state: {e}");
+        match instance.set_image(Some(image), None).await {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!("could not update a key's running state: {e}");
+                false
+            }
         }
     }
 }
@@ -85,6 +91,9 @@ struct Entry {
     shown: Option<KeyState>,
     /// Composed images for `icon`, by state.
     composed: HashMap<KeyState, Arc<str>>,
+    /// Which `track` call made this entry, so a paint computed for an
+    /// older one is dropped.
+    generation: u64,
 }
 
 struct Shared {
@@ -96,6 +105,12 @@ struct Shared {
     tick_timeout: Duration,
     /// Set while ticks fail, so a failure is logged once, not every tick.
     failing: AtomicBool,
+    /// Held while painting a key: by the poller for a state image, and by
+    /// `apply_visuals` (through `Watcher::paint_guard`) while it paints the
+    /// plain icon and re-tracks or untracks the key. So a state paint is
+    /// checked against the registry and sent with no plain paint between.
+    paint_lock: tokio::sync::Mutex<()>,
+    next_generation: AtomicU64,
 }
 
 impl Shared {
@@ -180,13 +195,25 @@ impl Shared {
                 .composed
                 .entry(state)
                 .or_insert_with(|| badge::compose(&icon, state).into());
-            paints.push((id.clone(), Arc::clone(image)));
+            paints.push((id.clone(), entry.generation, state, Arc::clone(image)));
         }
-        // Painted outside the lock: `apply_visuals` may paint and re-track a
-        // key meanwhile, and re-tracking forgets `shown`, so a stale paint
-        // here is replaced on the next tick.
-        for (id, image) in paints {
-            self.painter.paint(&id, &image).await;
+        for (id, generation, state, image) in paints {
+            let _painting = self.paint_lock.lock().await;
+            // Re-checked under the paint lock: since the registry lock was
+            // released the key may have been untracked, or re-tracked by an
+            // `apply_visuals` that painted its plain icon.
+            let current = self
+                .registry()
+                .get(&id)
+                .is_some_and(|e| e.generation == generation && e.shown == Some(state));
+            // A failed paint forgets `shown`, so the next tick retries.
+            if current
+                && !self.painter.paint(&id, &image).await
+                && let Some(entry) = self.registry().get_mut(&id)
+                && entry.generation == generation
+            {
+                entry.shown = None;
+            }
         }
     }
 }
@@ -234,6 +261,8 @@ impl Watcher {
                 interval,
                 tick_timeout,
                 failing: AtomicBool::new(false),
+                paint_lock: tokio::sync::Mutex::new(()),
+                next_generation: AtomicU64::new(0),
             }),
             started: Once::new(),
         }
@@ -257,6 +286,7 @@ impl Watcher {
                     icon,
                     shown: None,
                     composed,
+                    generation: self.shared.next_generation.fetch_add(1, Ordering::Relaxed),
                 },
             );
         }
@@ -270,6 +300,12 @@ impl Watcher {
         if !spawned {
             self.shared.wake.notify_one();
         }
+    }
+
+    /// Hold this while painting a tracked key's plain icon and calling
+    /// `track`/`untrack` for it, so no state paint lands in between.
+    pub async fn paint_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.shared.paint_lock.lock().await
     }
 
     /// Stops following `instance_id` (it disappeared, or its key no longer
@@ -438,6 +474,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingPainter {
         paints: Mutex<Vec<(String, String)>>,
+        fail_next: AtomicBool,
     }
 
     impl RecordingPainter {
@@ -448,11 +485,12 @@ mod tests {
 
     #[async_trait]
     impl Painter for RecordingPainter {
-        async fn paint(&self, instance_id: &str, image: &str) {
+        async fn paint(&self, instance_id: &str, image: &str) -> bool {
             self.paints
                 .lock()
                 .unwrap()
                 .push((instance_id.to_string(), image.to_string()));
+            !self.fail_next.swap(false, Ordering::Relaxed)
         }
     }
 
@@ -622,5 +660,33 @@ mod tests {
             painter.paints(),
             [("k1".to_string(), badge::compose(ICON, KeyState::Focused))]
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_paint_is_retried_on_the_next_tick() {
+        let backend = FakeBackend::new(vec![windows(&[("konsole", &["w1"])], None)]);
+        let painter = Arc::new(RecordingPainter::default());
+        painter.fail_next.store(true, Ordering::Relaxed);
+        let w = watcher(&backend, &painter);
+        w.track("k1", vec![class("konsole")], icon());
+        run_for(INTERVAL * 3).await;
+        assert_eq!(painter.paints().len(), 2, "{:?}", painter.paints());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_key_untracked_while_its_paint_waits_is_not_painted() {
+        let backend = FakeBackend::new(vec![windows(&[("konsole", &["w1"])], None)]);
+        let painter = Arc::new(RecordingPainter::default());
+        let w = watcher(&backend, &painter);
+        // `apply_visuals` holds the paint lock while it paints the plain
+        // icon and untracks the key (its option was turned off).
+        let guard = w.paint_guard().await;
+        w.track("k1", vec![class("konsole")], icon());
+        run_for(Duration::from_millis(10)).await;
+        assert_eq!(backend.calls().len(), 1);
+        w.untrack("k1");
+        drop(guard);
+        run_for(INTERVAL * 3).await;
+        assert!(painter.paints().is_empty(), "{:?}", painter.paints());
     }
 }

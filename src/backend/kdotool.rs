@@ -55,26 +55,21 @@ fn search_args(class: &WindowClass) -> Vec<String> {
     ]
 }
 
-/// Arguments for the live state poller's one kdotool run per tick: the
-/// focused window's id, then every window matching any of `classes`
-/// (`--class` plus `--classname`, as `search_args`), then each of those
-/// windows' `resourceClass`. The pattern is the classes' anchored regexes
+/// Arguments for the live state poller's kdotool run: every window
+/// matching any of `classes` (`--class` plus `--classname`, as
+/// `search_args`), then each of those windows' `resourceClass`. The focused
+/// window is read by a separate `getactivewindow` run: chained in front, a
+/// moment with no focused window (`workspace.activeWindow` null) would make
+/// the generated script throw and lose the whole tick. The pattern is the classes' anchored regexes
 /// joined with `|`, so it is built only from validated classes. kdotool
 /// can't run two `search`es in one script (v0.2.3 fails with "No such
 /// object path '/Scripting/Script0'"), hence one alternation.
 fn classed_search_args(classes: &[WindowClass]) -> Vec<String> {
     let pattern: Vec<String> = classes.iter().map(WindowClass::anchored_regex).collect();
-    let mut args: Vec<String> = [
-        "getactivewindow",
-        "getwindowid",
-        "%1",
-        "search",
-        "--class",
-        "--classname",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
+    let mut args: Vec<String> = ["search", "--class", "--classname"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
     args.push(pattern.join("|"));
     args.extend(
         ["getwindowid", "%@", "getwindowclassname", "%@"]
@@ -87,7 +82,6 @@ fn classed_search_args(classes: &[WindowClass]) -> Vec<String> {
 /// The parsed `classed_search_args` output.
 #[derive(Debug, PartialEq, Eq)]
 struct ClassedSearch {
-    active: Option<WindowId>,
     /// Each matching window and its `resourceClass`, in `windowList()` order.
     windows: Vec<(WindowId, String)>,
 }
@@ -97,26 +91,19 @@ fn is_window_id(line: &str) -> bool {
 }
 
 /// Parses `classed_search_args` output (captured with kdotool v0.2.3 on
-/// Plasma 6): an optional focused-window id (absent when nothing is
-/// focused), N window ids, then N classes, one per line. A class can be
-/// empty, so blank lines are kept; the line count's parity says whether the
-/// focused id is there. Anything malformed is an error, never a guess.
+/// Plasma 6): N window ids, then N classes, one per line. A class can be
+/// empty, so blank lines are kept. Anything malformed is an error, never a
+/// guess.
 fn parse_classed_search(stdout: &str) -> Result<ClassedSearch, BackendError> {
     let bad = |what: String| BackendError::CommandFailed(format!("kdotool state query: {what}"));
     let lines: Vec<&str> = stdout
         .lines()
         .map(|l| l.strip_suffix('\r').unwrap_or(l))
         .collect();
-    let (active, rest) = if lines.len() % 2 == 1 {
-        let first = lines[0].trim();
-        if !is_window_id(first) {
-            return Err(bad(format!("{first:?} is not a window id")));
-        }
-        (Some(WindowId::new(first)), &lines[1..])
-    } else {
-        (None, &lines[..])
-    };
-    let (ids, classes) = rest.split_at(rest.len() / 2);
+    if lines.len() % 2 == 1 {
+        return Err(bad(format!("{} lines for ids and classes", lines.len())));
+    }
+    let (ids, classes) = lines.split_at(lines.len() / 2);
     let mut windows = Vec::with_capacity(ids.len());
     for (id, class) in ids.iter().zip(classes) {
         let id = id.trim();
@@ -125,7 +112,7 @@ fn parse_classed_search(stdout: &str) -> Result<ClassedSearch, BackendError> {
         }
         windows.push((WindowId::new(id), class.trim().to_string()));
     }
-    Ok(ClassedSearch { active, windows })
+    Ok(ClassedSearch { windows })
 }
 
 fn class_key(class: &WindowClass) -> String {
@@ -171,6 +158,7 @@ fn record_search(
 
 /// Each class's windows: those whose `resourceClass` matches, plus those the
 /// cache says its `search` lists. A pair with no answer counts as "no".
+/// `active` is filled in by the caller.
 fn assign(
     classes: &[WindowClass],
     search: &ClassedSearch,
@@ -195,7 +183,7 @@ fn assign(
                 .collect();
             WindowSnapshot {
                 windows,
-                active: search.active.clone(),
+                active: None,
             }
         })
         .collect()
@@ -364,7 +352,10 @@ impl WindowBackend for KdotoolBackend {
         parse_current_desktop_windows(&String::from_utf8_lossy(&output.stdout)).map(Some)
     }
 
-    /// One kdotool run per tick in the steady state (`classed_search_args`).
+    /// Two kdotool runs per tick in the steady state: `classed_search_args`,
+    /// then `getactivewindow` if any class has a window. A failed focus read
+    /// is taken as "nothing focused" (kdotool's script throws when no
+    /// window is active), as the default `snapshot` does.
     /// `getwindowclassname` prints only `resourceClass`, so a window that
     /// matched a class by `resourceName` alone (VS Code's `code`) can't be
     /// placed from that output: for each (window, class) pair with no
@@ -399,7 +390,17 @@ impl WindowBackend for KdotoolBackend {
                 &listed,
             );
         }
-        Ok(assign(classes, &search, &self.name_matches()))
+        let mut snapshots = assign(classes, &search, &self.name_matches());
+        if snapshots.iter().any(|s| !s.windows.is_empty()) {
+            let active = self.active_window().await.unwrap_or_else(|e| {
+                log::debug!("no focused window read, assuming none: {e}");
+                None
+            });
+            for snapshot in &mut snapshots {
+                snapshot.active.clone_from(&active);
+            }
+        }
+        Ok(snapshots)
     }
 
     async fn open_window_classes(&self) -> Result<Vec<String>, BackendError> {
@@ -437,9 +438,8 @@ mod tests {
     use super::*;
 
     // Captured from kdotool v0.2.3 on KDE Plasma 6 (Wayland): `kdotool
-    // getactivewindow getwindowid %1 search --class --classname
-    // '^org\.kde\.konsole$|^code$|^zzz$' getwindowid %@ getwindowclassname
-    // %@`, exit 0. The focused window (not a match), Konsole, then VS Code,
+    // search --class --classname '^org\.kde\.konsole$|^code$|^zzz$'
+    // getwindowid %@ getwindowclassname %@`, exit 0. Konsole, then VS Code,
     // which matched `code` by its resourceName: its resourceClass is
     // `com.microsoft.VSCode`.
     const CLASSED: &str = include_str!("../../tests/fixtures/kdotool-search-classnames.stdout");
@@ -457,9 +457,6 @@ mod tests {
         assert_eq!(
             classed_search_args(&wanted),
             [
-                "getactivewindow",
-                "getwindowid",
-                "%1",
                 "search",
                 "--class",
                 "--classname",
@@ -476,10 +473,6 @@ mod tests {
     fn parses_the_real_state_query_output() {
         let search = parse_classed_search(CLASSED).unwrap();
         assert_eq!(
-            search.active,
-            Some(WindowId::new("{d9fb1f05-c21d-42ba-b854-60bb869231a0}"))
-        );
-        assert_eq!(
             search.windows,
             [
                 (
@@ -495,22 +488,13 @@ mod tests {
     }
 
     #[test]
-    fn the_state_query_without_a_focused_window_or_matches() {
+    fn the_state_query_with_no_match_or_an_empty_class() {
         assert_eq!(
             parse_classed_search("").unwrap(),
-            ClassedSearch {
-                active: None,
-                windows: vec![]
-            }
+            ClassedSearch { windows: vec![] }
         );
         assert_eq!(
-            parse_classed_search("{a}\n").unwrap().active,
-            Some(WindowId::new("{a}"))
-        );
-        let no_focus = parse_classed_search("{a}\n{b}\nk\n\n").unwrap();
-        assert_eq!(no_focus.active, None);
-        assert_eq!(
-            no_focus.windows,
+            parse_classed_search("{a}\n{b}\nk\n\n").unwrap().windows,
             [
                 (WindowId::new("{a}"), "k".to_string()),
                 (WindowId::new("{b}"), String::new())
@@ -522,9 +506,10 @@ mod tests {
     fn malformed_state_output_is_an_error_not_a_guess() {
         for out in [
             "konsole\n",
-            "x\n{a}\nk\n",
+            "{a}\n",
+            "x\nk\n",
             "{a}\nk\n{b}\n",
-            "{a}\n{b}\nk\n{c}\n{d}\n",
+            "{a}\n{b}\nk\n",
         ] {
             assert!(
                 matches!(
@@ -562,7 +547,6 @@ mod tests {
         let snapshots = assign(&wanted, &search, &cache);
         assert_eq!(snapshots[0].windows, [konsole]);
         assert_eq!(snapshots[1].windows, [vscode]);
-        assert_eq!(snapshots[1].active, search.active);
         // A new class reopens only its own question.
         let more = classes(&["org.kde.konsole", "Code", "org.kde.dolphin"]);
         assert_eq!(unresolved_classes(&more, &search.windows, &cache), [2]);
