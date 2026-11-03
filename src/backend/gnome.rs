@@ -6,7 +6,9 @@
 //! method call are bounded by `process::CALL_TIMEOUT`.
 
 use super::process::{CALL_TIMEOUT, with_deadline};
-use super::{BackendError, WindowBackend, WindowClass, WindowId, WindowSnapshot};
+use super::{
+    BackendError, WindowBackend, WindowClass, WindowId, WindowSnapshot, snapshots_from_listing,
+};
 use async_trait::async_trait;
 use serde::Deserialize;
 use tokio::sync::OnceCell;
@@ -133,6 +135,23 @@ fn snapshot_from(all: &[GnomeWindow], class: &WindowClass) -> WindowSnapshot {
     WindowSnapshot { windows, active }
 }
 
+/// Every class's windows and the focused window from one `List` reply.
+fn snapshots_from(all: &[GnomeWindow], classes: &[WindowClass]) -> Vec<WindowSnapshot> {
+    let active = all.iter().find(|w| w.focus).map(GnomeWindow::window_id);
+    snapshots_from_listing(
+        classes,
+        all.iter().map(|w| {
+            let candidates = [&w.wm_class, &w.wm_class_instance]
+                .into_iter()
+                .flatten()
+                .map(String::as_str)
+                .collect();
+            (w.window_id(), candidates)
+        }),
+        active,
+    )
+}
+
 /// One class per window that has one: `wm_class`, else the instance name.
 fn classes_from(all: &[GnomeWindow]) -> Vec<String> {
     all.iter()
@@ -233,6 +252,17 @@ impl WindowBackend for GnomeWindowCallsBackend {
     async fn snapshot(&self, class: &WindowClass) -> Result<WindowSnapshot, BackendError> {
         Ok(snapshot_from(&self.list().await?, class))
     }
+
+    /// One `List` call for every class.
+    async fn snapshot_many(
+        &self,
+        classes: &[WindowClass],
+    ) -> Result<Vec<WindowSnapshot>, BackendError> {
+        if classes.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(snapshots_from(&self.list().await?, classes))
+    }
 }
 
 /// A Window Calls `List` reply with one window of `window_class` (class
@@ -258,6 +288,21 @@ mod tests {
     // width, height, x, y, focus, in_current_workspace and workspace, listed
     // in stacking order (focused window last).
     const SAMPLE: &str = include_str!("../../tests/fixtures/window-calls-list.json");
+
+    #[test]
+    fn snapshot_many_answers_every_class_from_one_listing() {
+        let all = parse_all(SAMPLE).unwrap();
+        let classes: Vec<WindowClass> = ["firefox", "org.gnome.Nautilus", "navigator", "nope"]
+            .iter()
+            .map(|c| WindowClass::parse(c).unwrap())
+            .collect();
+        let many = snapshots_from(&all, &classes);
+        for (class, snapshot) in classes.iter().zip(&many) {
+            assert_eq!(*snapshot, snapshot_from(&all, class), "{class}");
+        }
+        assert_eq!(many[1].active, Some(WindowId::new("2044")));
+        assert!(many[3].windows.is_empty());
+    }
 
     #[test]
     fn every_classed_window_offers_a_class_that_matches_it() {

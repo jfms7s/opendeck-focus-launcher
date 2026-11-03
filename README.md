@@ -116,6 +116,15 @@ xattr -dr com.apple.quarantine ~/Library/Application\ Support/opendeck/plugins/c
    are none, instead of switching desktops. KDE Plasma only (a window on
    several, but not all, desktops counts on its first one); on GNOME, X11
    and macOS the option is ignored and the log says so once.
+   **Show whether the app is open** (on by default) draws the app's state
+   on the key's icon: dimmed when it has no window, a dot in the top-right
+   corner when it has one, and an orange ring when one of its windows is
+   focused. It follows the key's Window class (and the desktop-id retry
+   below), not the title filter or the current-desktop option, and is
+   checked every 2 seconds while the key is on screen; with no Focus or
+   Launch key on screen the plugin checks nothing. A key without an icon (or
+   with a BMP, ICO or WebP icon) keeps its plain face. Linux only (KDE,
+   GNOME, X11): macOS keys show the plain icon.
 4. **Appearance & matching** and **Launch** — optional overrides for the
    selected app. Each field shows the app's own value as its placeholder and
    only takes effect once you type something in it:
@@ -214,6 +223,7 @@ outside this repository.
 | 29 | Dial: turn to a window, close that window, press → a normal tap (focuses the app's first window); with the app closed, turning shows "no windows" and a press launches it. | not yet run | not yet run | not yet run | not yet run |
 | 30 | OpenDeck installed as a Flatpak, with the permissions under "Supported desktops" → the app list shows host apps; a press focuses an open host window and launches a closed one; without `kdotool` on the host (KDE) a press alerts that it is not installed. | not yet run | not yet run | not yet run | n/a |
 | 31 | Two virtual desktops, app open only on desktop 2, key on desktop 1 with "Only windows on the current desktop" on → press launches a new window here, no desktop switch; with it off → press switches to desktop 2 and focuses the window. | not yet run | n/a | n/a | n/a |
+| 32 | Key with "Show whether the app is open" on: app closed → icon dimmed; open it → a dot within 2 s; focus it → an orange ring; close it → dimmed again. Switch to a profile or page with no Focus or Launch key → no `kdotool` (or `wmctrl`) process starts any more (`watch -n 0.5 pgrep -a kdotool` stays empty) until one is back. | not yet run | not yet run | not yet run | n/a |
 <!-- smoke-checklist:end -->
 
 The plugin log (`~/.local/share/opendeck/logs/plugins/com.jfms7s.focuslauncher.sdPlugin.log`;

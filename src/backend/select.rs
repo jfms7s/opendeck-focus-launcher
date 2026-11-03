@@ -33,7 +33,7 @@ impl BackendKind {
     pub fn build(self) -> Box<dyn WindowBackend> {
         match self {
             #[cfg(not(target_os = "macos"))]
-            Self::Kdotool => Box::new(kdotool::KdotoolBackend),
+            Self::Kdotool => Box::new(kdotool::KdotoolBackend::new()),
             #[cfg(not(target_os = "macos"))]
             Self::GnomeWindowCalls => Box::new(gnome::GnomeWindowCallsBackend::new()),
             #[cfg(not(target_os = "macos"))]

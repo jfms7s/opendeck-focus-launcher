@@ -10,5 +10,6 @@
   "close_all_windows_on_hold": true,
   "hold_action": "close_all",
   "title_filter": "grafana",
-  "current_desktop_only": true
+  "current_desktop_only": true,
+  "show_running_state": false
 }

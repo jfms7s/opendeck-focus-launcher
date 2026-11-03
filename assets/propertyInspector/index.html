@@ -23,6 +23,8 @@
 			<label class="check"><input type="checkbox" id="minimize_when_focused" /> Minimize when already focused</label>
 			<label class="check"><input type="checkbox" id="current_desktop_only" /> Only windows on the current desktop</label>
 			<p class="hint">A window on another virtual desktop counts as not open, so the key launches one here instead of switching desktops. KDE Plasma only.</p>
+			<label class="check"><input type="checkbox" id="show_running_state" /> Show whether the app is open</label>
+			<p class="hint">Dimmed icon: no window. Dot: open. Orange ring: one of its windows is focused. Checked every 2 seconds while the key is visible. Linux only.</p>
 			<div class="field">
 				<label for="hold_action">Hold</label>
 				<select id="hold_action">
@@ -97,6 +99,7 @@
 			{ key: "custom_args", kind: "text", def: null, reset: true },
 			{ key: "title_filter", kind: "text", def: null, reset: true },
 			{ key: "current_desktop_only", kind: "bool", def: false },
+			{ key: "show_running_state", kind: "bool", def: true },
 		];
 
 		window.connectOpenActionSocketData = new Promise((resolve) => {
