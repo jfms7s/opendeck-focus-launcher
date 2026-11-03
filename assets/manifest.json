@@ -1,7 +1,7 @@
 {
 	"Name": "Focus Launcher",
 	"Author": "jfms7s",
-	"Version": "0.7.0",
+	"Version": "0.8.0",
 	"Category": "App Launcher",
 	"Icon": "icons/icon",
 	"OS": [{ "Platform": "linux" }, { "Platform": "mac" }],
