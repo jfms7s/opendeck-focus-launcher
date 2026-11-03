@@ -207,10 +207,17 @@ impl WindowBackend for X11Backend {
     }
 }
 
+/// `wmctrl -l -x` output with one window of `window_class` (both
+/// `WM_CLASS` halves), run through the real parser.
+#[cfg(test)]
+pub(super) fn near_miss_probe(window_class: &str, wanted: &WindowClass) -> bool {
+    let stdout = format!("0x00000001  0 {window_class}.{window_class}  myhost t\n");
+    !parse_wmctrl_list(&stdout, wanted).is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::NEAR_MISSES;
 
     // Captured from `wmctrl -l -x` on KDE Plasma 6 Wayland (XWayland
     // clients); hostname redacted to `myhost`. Both WM_CLASS halves of the
@@ -282,17 +289,6 @@ mod tests {
         assert!(parse_wmctrl_list(REAL_WMCTRL, &class("claude")).is_empty());
         assert!(parse_wmctrl_list(REAL_WMCTRL, &class("anthropic")).is_empty());
         assert!(parse_wmctrl_list(REAL_WMCTRL, &class("xwayland")).is_empty());
-    }
-
-    #[test]
-    fn contract_near_misses_do_not_match() {
-        for (window_class, wanted) in NEAR_MISSES {
-            let stdout = format!("0x00000001  0 {window_class}.{window_class}  myhost t\n");
-            assert!(
-                parse_wmctrl_list(&stdout, &class(wanted)).is_empty(),
-                "{wanted} must not match {window_class}"
-            );
-        }
     }
 
     /// A synthetic line (not in the captured fixture): a window whose

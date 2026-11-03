@@ -237,18 +237,22 @@ async fn target_snapshot<'a>(
     let mut matched_class = class;
     if snapshot.windows.is_empty()
         && let Some(fallback) = id_fallback_class(settings, entry)
-        && let Ok(fallback) = WindowClass::parse(fallback)
     {
-        let retry = backend.snapshot(&fallback).await.map_err(|e| {
-            log::warn!(
-                "{}: retry with the desktop id {fallback} failed: {e}",
-                entry.id
-            );
-            backend_failure(e)
-        })?;
-        if !retry.windows.is_empty() {
-            snapshot = retry;
-            matched_class = fallback;
+        match WindowClass::parse(fallback) {
+            Err(e) => log::debug!("{}: id fallback {fallback:?} skipped: {e}", entry.id),
+            Ok(fallback) => {
+                let retry = backend.snapshot(&fallback).await.map_err(|e| {
+                    log::warn!(
+                        "{}: retry with the desktop id {fallback} failed: {e}",
+                        entry.id
+                    );
+                    backend_failure(e)
+                })?;
+                if !retry.windows.is_empty() {
+                    snapshot = retry;
+                    matched_class = fallback;
+                }
+            }
         }
     }
     log::info!(
@@ -1045,6 +1049,17 @@ mod tests {
             .tap(&settings("chrome-abc-Default", true, true), &apps)
             .await;
         assert!(matches!(outcome, RunOutcome::Launched(_)));
+    }
+
+    #[tokio::test]
+    async fn an_id_that_is_not_a_valid_class_skips_the_fallback_and_launches() {
+        // `/` fails the class allowlist, so the id can't be retried as a class.
+        let h = Harness::new(RecordingFakeBackend::default());
+        let apps = vec![app("bad/id", "crx_abc")];
+        let outcome = h.tap(&settings("bad/id", true, true), &apps).await;
+        assert!(matches!(outcome, RunOutcome::Launched(_)));
+        assert_eq!(h.launched().len(), 1);
+        assert_eq!(*h.backend.list_calls.lock().unwrap(), vec!["crx_abc"]);
     }
 
     #[tokio::test]
