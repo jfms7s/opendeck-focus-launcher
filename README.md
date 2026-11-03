@@ -34,6 +34,24 @@ Linux, always starts a new process, even when the app is already open.
   bundle (`.icns`, converted with the built-in `sips` and cached in
   `~/Library/Caches/opendeck-focus-launcher/`).
 
+- **OpenDeck installed as a Flatpak** (Linux) — *experimental, never run
+  against a live session*. Every host program the plugin runs (the app it
+  launches, `kdotool`, `wmctrl`/`xdotool`, `gsettings`) goes through
+  `flatpak-spawn --host`, so those tools must be installed on the host, not in
+  the sandbox. Apps are read from the host's application directories only:
+  `~/.local/share/applications`, the Flatpak exports
+  (`~/.local/share/flatpak/exports/share/applications`,
+  `/var/lib/flatpak/exports/share/applications`) and the host's
+  `/usr/share/applications` as `/run/host/usr/share/applications`. Which of
+  them the plugin sees depends on OpenDeck's Flatpak permissions; all of
+  them are visible with
+  `flatpak override --user --talk-name=org.freedesktop.Flatpak --filesystem=host-os:ro --filesystem=xdg-data/applications:ro --filesystem=xdg-data/flatpak/exports/share/applications:ro --filesystem=/var/lib/flatpak/exports/share/applications:ro <OpenDeck's app id>`
+  (`org.freedesktop.Flatpak` is what lets `flatpak-spawn --host` run
+  anything). The GNOME backend talks to GNOME Shell over the session bus, so
+  OpenDeck also needs `--talk-name=org.gnome.Shell`. Icons
+  are looked up in the sandbox's icon themes only, so host-only icons fall
+  back to the default key image.
+
 Other Wayland compositors (sway, Hyprland, niri, ...) are not supported: their
 native windows are invisible to `wmctrl`, so the plugin does not guess. If no
 backend fits, it logs why and every key press shows an alert instead of
@@ -188,6 +206,7 @@ outside this repository.
 | 27 | Key for an app whose windows report another class (e.g. the Plex snap), app open → reopen its settings, pick the window under "Pick from open windows" → Window class is filled, the count goes above 0, and a press focuses it. | not yet run | not yet run | not yet run | n/a |
 | 28 | Dial bound to an app with three windows → turning shows `1/3`, `2/3`, `3/3` with each window's title and switches to none of them; turning back wraps; a press focuses the window shown and the dial shows the app's name again. | not yet run | not yet run | not yet run | not yet run |
 | 29 | Dial: turn to a window, close that window, press → a normal tap (focuses the app's first window); with the app closed, turning shows "no windows" and a press launches it. | not yet run | not yet run | not yet run | not yet run |
+| 30 | OpenDeck installed as a Flatpak, with the permissions under "Supported desktops" → the app list shows host apps; a press focuses an open host window and launches a closed one; without `kdotool` on the host (KDE) a press alerts that it is not installed. | not yet run | not yet run | not yet run | n/a |
 <!-- smoke-checklist:end -->
 
 The plugin log (`~/.local/share/opendeck/logs/plugins/com.jfms7s.focuslauncher.sdPlugin.log`;

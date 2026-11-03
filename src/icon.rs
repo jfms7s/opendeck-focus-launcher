@@ -143,11 +143,10 @@ fn output_within(
 #[cfg(not(target_os = "macos"))]
 fn gsettings_icon_theme() -> Option<String> {
     let output = output_within(
-        std::process::Command::new("gsettings").args([
-            "get",
-            "org.gnome.desktop.interface",
-            "icon-theme",
-        ]),
+        &mut crate::host::std_command(
+            "gsettings",
+            &["get", "org.gnome.desktop.interface", "icon-theme"],
+        ),
         GSETTINGS_TIMEOUT,
     )?;
     if !output.status.success() {

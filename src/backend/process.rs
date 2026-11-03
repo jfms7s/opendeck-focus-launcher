@@ -5,10 +5,10 @@
 //! own adapter.
 
 use super::BackendError;
+use crate::host::{self, HostUse};
 use std::future::Future;
 use std::process::Output;
 use std::time::Duration;
-use tokio::process::Command;
 
 /// How long one backend call (a kdotool, wmctrl or xdotool run, or a Window
 /// Calls method) may take. openaction handles events one at a time, so a
@@ -52,11 +52,29 @@ async fn run_with_timeout(
         Some(sub) => format!("{cmd} {sub}"),
         None => cmd.to_string(),
     };
-    let output = Command::new(cmd).args(args).kill_on_drop(true).output();
-    with_deadline(&what, limit, async {
+    let output = host::command(cmd, args, HostUse::Tool)
+        .kill_on_drop(true)
+        .output();
+    let output = with_deadline(&what, limit, async {
         output.await.map_err(|e| spawn_error(cmd, &e))
     })
-    .await
+    .await?;
+    missing_on_host(cmd, output, host::sandboxed())
+}
+
+/// Inside a sandbox, `flatpak-spawn` always starts, so a tool missing on the
+/// host shows up only as its stderr message; report that as `Unavailable`,
+/// as a direct spawn's `NotFound` is.
+fn missing_on_host(cmd: &str, output: Output, sandboxed: bool) -> Result<Output, BackendError> {
+    if sandboxed
+        && !output.status.success()
+        && host::host_program_missing(&String::from_utf8_lossy(&output.stderr))
+    {
+        return Err(BackendError::Unavailable(format!(
+            "{cmd} is not installed on the host"
+        )));
+    }
+    Ok(output)
 }
 
 fn spawn_error(cmd: &str, e: &std::io::Error) -> BackendError {
@@ -86,6 +104,32 @@ pub(super) fn check_status(output: &Output, what: &str) -> Result<(), BackendErr
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    fn exited(code: i32, stderr: &str) -> Output {
+        std::process::Command::new("sh")
+            .args([
+                "-c",
+                &format!("printf '%s' \"$1\" 1>&2; exit {code}"),
+                "sh",
+                stderr,
+            ])
+            .output()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_tool_missing_on_the_host_is_unavailable_when_sandboxed() {
+        // flatpak-spawn 1.0.x on Fedora 44, exit 1.
+        let msg = "Portal call failed: Failed to start command: Failed to execute child process \u{201c}kdotool\u{201d} (No such file or directory)";
+        assert_eq!(
+            missing_on_host("kdotool", exited(1, msg), true).unwrap_err(),
+            BackendError::Unavailable("kdotool is not installed on the host".into())
+        );
+        // Outside a sandbox the same text is just the tool's own output.
+        assert!(missing_on_host("kdotool", exited(1, msg), false).is_ok());
+        // Any other failure goes on to the adapter's check_status.
+        assert!(missing_on_host("kdotool", exited(1, "no match"), true).is_ok());
+    }
 
     #[test]
     fn check_status_ok_on_success() {
