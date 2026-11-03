@@ -175,8 +175,10 @@ fn detect_icon_theme() -> String {
     if let Some(theme) = gsettings_icon_theme() {
         return theme;
     }
-    let on_kde = std::env::var("XDG_CURRENT_DESKTOP")
-        .is_ok_and(|d| d.split(':').any(|p| p.eq_ignore_ascii_case("kde")));
+    let on_kde = crate::backend::select::desktop_is(
+        std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref(),
+        "kde",
+    );
     if on_kde { "breeze" } else { "hicolor" }.to_string()
 }
 

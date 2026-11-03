@@ -2,7 +2,8 @@
 //! read from their `Contents/Info.plist`. Pure Rust and platform-neutral, so
 //! the Linux test suite covers it; only macOS calls it for real.
 
-use crate::apps::AppEntry;
+use crate::apps::{AppEntry, open_by_bundle_id};
+use crate::settings::non_empty;
 use plist::{Dictionary, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -68,10 +69,7 @@ fn bundles_in(dir: &Path, depth: u8) -> Vec<PathBuf> {
 }
 
 fn string<'a>(dict: &'a Dictionary, key: &str) -> Option<&'a str> {
-    dict.get(key)
-        .and_then(Value::as_string)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+    non_empty(dict.get(key).and_then(Value::as_string))
 }
 
 /// Info.plist flags come as booleans, numbers or "1"/"YES"/"true" strings.
@@ -123,7 +121,7 @@ pub(crate) fn read_bundle(bundle: &Path) -> Option<AppEntry> {
     });
     Some(AppEntry {
         window_class: id.clone(),
-        exec: format!("open -b {id}"),
+        exec: shell_words::join(open_by_bundle_id(&id)),
         name,
         icon,
         path: bundle.to_path_buf(),
@@ -192,6 +190,11 @@ mod tests {
             ("com.apple.Safari", "Safari", "com.apple.Safari")
         );
         assert_eq!(s.exec, "open -b com.apple.Safari");
+        // The PI shows `exec`; it must be the command a launch runs.
+        assert_eq!(
+            s.exec,
+            shell_words::join(crate::apps::build_launch_argv_on(true, s, None, None).unwrap())
+        );
         assert_eq!(s.path, safari);
         assert_eq!(
             s.icon.as_deref(),
