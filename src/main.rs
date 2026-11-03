@@ -6,6 +6,7 @@ mod backend;
 mod bundle;
 mod catalog;
 mod decision;
+mod host;
 mod icon;
 mod orchestrate;
 mod settings;

@@ -48,7 +48,22 @@ pub fn list_installed_apps() -> Vec<AppEntry> {
 #[cfg(not(target_os = "macos"))]
 pub fn list_installed_apps() -> Vec<AppEntry> {
     let desktops = current_desktops(std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref());
-    list_installed_apps_from_paths(default_paths(), &desktops)
+    list_installed_apps_from_paths(discovery_paths(crate::host::sandboxed()), &desktops)
+}
+
+/// Where to look for `.desktop` files. Inside a Flatpak sandbox the XDG dirs
+/// are the sandbox's own (its runtime's apps can't be launched on the host),
+/// so only the host's application dirs are read, as far as OpenDeck's
+/// filesystem permissions expose them.
+#[cfg(not(target_os = "macos"))]
+fn discovery_paths(sandboxed: bool) -> Vec<PathBuf> {
+    if !sandboxed {
+        return default_paths().collect();
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    crate::host::host_application_dirs(&home)
 }
 
 /// The colon-separated `XDG_CURRENT_DESKTOP` list, blanks dropped.
@@ -376,20 +391,9 @@ pub trait Launcher: Send + Sync {
     async fn launch(&self, argv: &[String]) -> std::io::Result<()>;
 }
 
-/// Spawns directly, or through `flatpak-spawn --host` when the plugin runs
-/// inside a Flatpak sandbox (detected the same way `oadesktopentry` does).
+/// Spawns the launch argv on the host: directly, or through `flatpak-spawn
+/// --host` inside a Flatpak sandbox (`crate::host`).
 pub struct SystemLauncher;
-
-/// The program and arguments actually executed for `argv`.
-fn host_argv(argv: &[String], sandboxed: bool) -> Vec<String> {
-    if sandboxed {
-        let mut wrapped = vec!["flatpak-spawn".to_string(), "--host".to_string()];
-        wrapped.extend_from_slice(argv);
-        wrapped
-    } else {
-        argv.to_vec()
-    }
-}
 
 /// How long to wait for `open` (macOS) to exit before calling a launch done.
 /// `open -b` asks LaunchServices and exits within a fraction of a second
@@ -420,12 +424,11 @@ fn early_exit_window(program: &str) -> Option<Duration> {
 /// running when the window ends, counts as launched. A still-running child is
 /// reaped in the background, which logs a later failing exit.
 async fn spawn_checked(
-    program: &str,
-    args: &[String],
+    mut cmd: tokio::process::Command,
     early_exit: Option<Duration>,
 ) -> std::io::Result<()> {
-    let mut child = tokio::process::Command::new(program)
-        .args(args)
+    let program = cmd.as_std().get_program().to_string_lossy().into_owned();
+    let mut child = cmd
         // The app's own output stays out of the plugin log, which may
         // be shared in bug reports; a failing exit is still logged below.
         .stdin(std::process::Stdio::null())
@@ -463,11 +466,12 @@ async fn spawn_checked(
 #[async_trait::async_trait]
 impl Launcher for SystemLauncher {
     async fn launch(&self, argv: &[String]) -> std::io::Result<()> {
-        let full = host_argv(argv, std::env::var_os("FLATPAK_ID").is_some());
-        let (program, rest) = full
+        let (program, rest) = argv
             .split_first()
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty argv"))?;
-        spawn_checked(program, rest, early_exit_window(program)).await
+        let cmd = crate::host::command(program, rest, crate::host::HostUse::App);
+        let early_exit = early_exit_window(&cmd.as_std().get_program().to_string_lossy());
+        spawn_checked(cmd, early_exit).await
     }
 }
 
@@ -765,16 +769,6 @@ mod tests {
         assert_eq!(argv, vec!["firefox", "--new-window"]);
     }
 
-    #[test]
-    fn flatpak_sandbox_wraps_the_argv_without_a_shell() {
-        let argv = vec!["firefox".to_string(), "--new-window".to_string()];
-        assert_eq!(host_argv(&argv, false), argv);
-        assert_eq!(
-            host_argv(&argv, true),
-            vec!["flatpak-spawn", "--host", "firefox", "--new-window"]
-        );
-    }
-
     #[tokio::test]
     async fn launching_a_missing_binary_fails_instead_of_reporting_success() {
         let result = SystemLauncher
@@ -784,13 +778,13 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
-    fn args(list: &[&str]) -> Vec<String> {
-        list.iter().map(|s| s.to_string()).collect()
+    fn host(program: &str, args: &[&str]) -> tokio::process::Command {
+        crate::host::command(program, args, crate::host::HostUse::App)
     }
 
     #[tokio::test]
     async fn a_wrapper_exiting_non_zero_in_its_window_is_a_failed_launch() {
-        let err = spawn_checked("sh", &args(&["-c", "exit 3"]), Some(Duration::from_secs(1)))
+        let err = spawn_checked(host("sh", &["-c", "exit 3"]), Some(Duration::from_secs(1)))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("exited with"), "{err}");
@@ -800,8 +794,7 @@ mod tests {
     async fn a_wrapper_still_running_after_its_window_counts_as_launched() {
         let started = std::time::Instant::now();
         let result = spawn_checked(
-            "sh",
-            &args(&["-c", "sleep 5"]),
+            host("sh", &["-c", "sleep 5"]),
             Some(Duration::from_millis(100)),
         )
         .await;
@@ -812,7 +805,7 @@ mod tests {
     #[tokio::test]
     async fn a_wrapper_exiting_zero_counts_as_launched() {
         assert!(
-            spawn_checked("true", &[], Some(Duration::from_secs(1)))
+            spawn_checked(host("true", &[]), Some(Duration::from_secs(1)))
                 .await
                 .is_ok()
         );
@@ -824,7 +817,7 @@ mod tests {
         // (its exit is only logged), and the call returns without waiting.
         let started = std::time::Instant::now();
         assert!(
-            spawn_checked("sh", &args(&["-c", "sleep 1; exit 3"]), None)
+            spawn_checked(host("sh", &["-c", "sleep 1; exit 3"]), None)
                 .await
                 .is_ok()
         );
@@ -863,6 +856,16 @@ mod tests {
             resolve_window_class("org.kde.kate", Some("  ")),
             "org.kde.kate"
         );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_sandboxed_plugin_discovers_only_the_hosts_application_dirs() {
+        let paths = discovery_paths(true);
+        assert!(paths.contains(&PathBuf::from("/run/host/usr/share/applications")));
+        assert!(paths.iter().all(|p| p.ends_with("applications")));
+        assert!(!paths.contains(&PathBuf::from("/usr/share/applications")));
+        assert!(!discovery_paths(false).is_empty());
     }
 
     #[cfg(not(target_os = "macos"))]
