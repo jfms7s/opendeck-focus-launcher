@@ -6,8 +6,9 @@ window to the front if it has one, or launches it if it doesn't. Press again
 while the app is already focused to cycle to its next window, or minimize it
 if it only has one.
 
-Built because OpenDeck's own Starter Pack app-launcher action always starts a
-new process, even when the app is already open.
+Built because the Linux App Launcher plugin's launch action
+(`me.amankhanna.oadesktopentry`), the usual way to start apps from OpenDeck on
+Linux, always starts a new process, even when the app is already open.
 
 ## Supported desktops
 
