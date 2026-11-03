@@ -109,7 +109,13 @@ xattr -dr com.apple.quarantine ~/Library/Application\ Support/opendeck/plugins/c
    just comes forward, and on macOS (`open -b`) a running app does the same
    unless a Command override opens a new window. Keys saved by an
    older version with "Press and hold to close all windows" checked open as
-   *Close all windows*.
+   *Close all windows*. **Only windows on the current desktop** (off by
+   default) makes a window on another virtual desktop count as not open, so
+   the key focuses or cycles only among the app's windows on this desktop
+   (plus any shown on every desktop) and launches a new one here when there
+   are none, instead of switching desktops. KDE Plasma only (a window on
+   several, but not all, desktops counts on its first one); on GNOME, X11
+   and macOS the option is ignored and the log says so once.
 4. **Appearance & matching** and **Launch** — optional overrides for the
    selected app. Each field shows the app's own value as its placeholder and
    only takes effect once you type something in it:
@@ -207,6 +213,7 @@ outside this repository.
 | 28 | Dial bound to an app with three windows → turning shows `1/3`, `2/3`, `3/3` with each window's title and switches to none of them; turning back wraps; a press focuses the window shown and the dial shows the app's name again. | not yet run | not yet run | not yet run | not yet run |
 | 29 | Dial: turn to a window, close that window, press → a normal tap (focuses the app's first window); with the app closed, turning shows "no windows" and a press launches it. | not yet run | not yet run | not yet run | not yet run |
 | 30 | OpenDeck installed as a Flatpak, with the permissions under "Supported desktops" → the app list shows host apps; a press focuses an open host window and launches a closed one; without `kdotool` on the host (KDE) a press alerts that it is not installed. | not yet run | not yet run | not yet run | n/a |
+| 31 | Two virtual desktops, app open only on desktop 2, key on desktop 1 with "Only windows on the current desktop" on → press launches a new window here, no desktop switch; with it off → press switches to desktop 2 and focuses the window. | not yet run | n/a | n/a | n/a |
 <!-- smoke-checklist:end -->
 
 The plugin log (`~/.local/share/opendeck/logs/plugins/com.jfms7s.focuslauncher.sdPlugin.log`;

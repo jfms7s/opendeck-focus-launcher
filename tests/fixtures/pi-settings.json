@@ -9,5 +9,6 @@
   "custom_args": "--new-window",
   "close_all_windows_on_hold": true,
   "hold_action": "close_all",
-  "title_filter": "grafana"
+  "title_filter": "grafana",
+  "current_desktop_only": true
 }

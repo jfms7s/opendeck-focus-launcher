@@ -26,6 +26,61 @@ fn search_args(class: &WindowClass) -> Vec<String> {
     ]
 }
 
+/// Arguments for one kdotool run that prints the current desktop number,
+/// then the class's window ids, then each of those windows' desktop. Only
+/// fixed words and the anchored class pattern (see `search_args`) are
+/// passed: the desktop number is read from the output, never sent back.
+fn current_desktop_args(class: &WindowClass) -> Vec<String> {
+    let mut args = vec!["get_desktop".to_string()];
+    args.extend(search_args(class));
+    args.extend(
+        ["getwindowid", "%@", "get_desktop_for_window", "%@"]
+            .into_iter()
+            .map(str::to_string),
+    );
+    args
+}
+
+/// Parses `current_desktop_args`' output (captured with kdotool v0.2.3 on
+/// Plasma 6): the current desktop, N window ids, then N desktops, where
+/// `null` is a window on every desktop (`KWin` 6 lists no desktops for it).
+/// Returns the ids on the current desktop or on all desktops, in order. A
+/// window on several (not all) desktops is judged by its first one, which
+/// is all `get_desktop_for_window` prints. Anything malformed is an error:
+/// guessing would launch duplicates on every press.
+fn parse_current_desktop_windows(stdout: &str) -> Result<Vec<WindowId>, BackendError> {
+    let bad = |what: String| BackendError::CommandFailed(format!("kdotool desktop query: {what}"));
+    let mut lines = stdout.lines().map(str::trim).filter(|l| !l.is_empty());
+    let current: u32 = lines
+        .next()
+        .ok_or_else(|| bad("no current desktop".to_string()))?
+        .parse()
+        .map_err(|e| bad(format!("current desktop is not a number: {e}")))?;
+    let rest: Vec<&str> = lines.collect();
+    if !rest.len().is_multiple_of(2) {
+        return Err(bad(format!("{} lines for ids and desktops", rest.len())));
+    }
+    let (ids, desktops) = rest.split_at(rest.len() / 2);
+    let mut here = Vec::new();
+    for (id, desktop) in ids.iter().zip(desktops) {
+        if !(id.starts_with('{') && id.ends_with('}')) {
+            return Err(bad(format!("{id:?} is not a window id")));
+        }
+        let on_current = match *desktop {
+            "null" => true,
+            n => {
+                n.parse::<u32>()
+                    .map_err(|e| bad(format!("desktop {n:?} is not a number: {e}")))?
+                    == current
+            }
+        };
+        if on_current {
+            here.push(WindowId::new(*id));
+        }
+    }
+    Ok(here)
+}
+
 /// Parses `kdotool search` output: one `{uuid}` window id per line, in
 /// `KWin`'s `workspace.windowList()` order (creation order, stable across
 /// focus changes).
@@ -122,6 +177,18 @@ impl WindowBackend for KdotoolBackend {
         Ok(parse_single_id(&String::from_utf8_lossy(&output.stdout)))
     }
 
+    /// One kdotool run: current desktop, ids, and each window's desktop.
+    async fn current_desktop_windows(
+        &self,
+        class: &WindowClass,
+    ) -> Result<Option<Vec<WindowId>>, BackendError> {
+        let args = current_desktop_args(class);
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = run("kdotool", &args).await?;
+        check_status(&output, "kdotool get_desktop")?;
+        parse_current_desktop_windows(&String::from_utf8_lossy(&output.stdout)).map(Some)
+    }
+
     async fn open_window_classes(&self) -> Result<Vec<String>, BackendError> {
         let output = run("kdotool", CLASSES_ARGS).await?;
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -155,6 +222,78 @@ impl WindowBackend for KdotoolBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Captured from kdotool v0.2.3 on KDE Plasma 6 (Wayland), one desktop:
+    // `kdotool get_desktop search --class --classname
+    // '^(plasmashell|org\.kde\.konsole)$' getwindowid %@
+    // get_desktop_for_window %@`, exit 0. Konsole is on desktop 1; the four
+    // plasmashell windows are on every desktop (`null`).
+    const CURRENT_DESKTOP: &str =
+        include_str!("../../tests/fixtures/kdotool-current-desktop.stdout");
+
+    #[test]
+    fn keeps_windows_on_the_current_desktop_and_sticky_ones_from_real_output() {
+        let here = parse_current_desktop_windows(CURRENT_DESKTOP).unwrap();
+        assert_eq!(here.len(), 5);
+        assert_eq!(
+            here[0],
+            WindowId::new("{6bd0e314-ef58-41f0-83aa-2cf821a91a35}")
+        );
+    }
+
+    #[test]
+    fn drops_windows_on_another_desktop() {
+        let out = "2\n{a}\n{b}\n{c}\n1\n2\nnull\n";
+        assert_eq!(
+            parse_current_desktop_windows(out).unwrap(),
+            [WindowId::new("{b}"), WindowId::new("{c}")]
+        );
+    }
+
+    #[test]
+    fn no_matching_window_prints_only_the_desktop() {
+        assert_eq!(parse_current_desktop_windows("3\n").unwrap(), []);
+    }
+
+    #[test]
+    fn malformed_desktop_output_is_an_error_not_a_guess() {
+        for out in [
+            "",
+            "one\n{a}\n1\n",
+            "-1\n{a}\n1\n",
+            "1\n{a}\n",
+            "1\n{a}\nx\n",
+            "1\nnot-an-id\n1\n",
+            "1\n{a}\n{b}\n1\n",
+        ] {
+            assert!(
+                matches!(
+                    parse_current_desktop_windows(out),
+                    Err(BackendError::CommandFailed(_))
+                ),
+                "{out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_desktop_query_passes_only_fixed_words_and_the_anchored_class() {
+        let class = WindowClass::parse("org.kde.konsole").unwrap();
+        assert_eq!(
+            current_desktop_args(&class),
+            [
+                "get_desktop",
+                "search",
+                "--class",
+                "--classname",
+                &class.anchored_regex(),
+                "getwindowid",
+                "%@",
+                "get_desktop_for_window",
+                "%@",
+            ]
+        );
+    }
 
     // Captured from kdotool v0.2.3 on KDE Plasma 6 (Wayland):
     // `kdotool search --class --classname '^plasmashell$'`, exit 0.

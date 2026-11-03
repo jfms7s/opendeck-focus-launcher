@@ -86,6 +86,8 @@ pub struct WindowSnapshot {
 ///   canonical `WindowId` form, so they compare equal with `==`.
 /// - **Errors:** a missing tool is `Unavailable`; "no windows match" is
 ///   `Ok(vec![])`, never an error.
+/// - **Desktops:** `current_desktop_windows` returns the class's windows on
+///   the current desktop or on all desktops; `Ok(None)` means unsupported.
 /// - **Titles:** `window_titles` returns one title per id, in the same
 ///   order, `""` for a window that has gone; `Ok(None)` means the backend
 ///   can't read titles at all. It is only called for keys with a title
@@ -101,6 +103,19 @@ pub trait WindowBackend: Send + Sync {
     /// The titles of `ids` (see "Titles" above). The default is for a
     /// backend that can't read them: the caller then ignores the filter.
     async fn window_titles(&self, _ids: &[WindowId]) -> Result<Option<Vec<String>>, BackendError> {
+        Ok(None)
+    }
+
+    /// The windows of `class` on the current virtual desktop, plus those on
+    /// every desktop ("sticky"), for keys with "Only windows on the current
+    /// desktop" on; the caller keeps the snapshot's windows that are in it.
+    /// Only called for those keys, so other keys make no extra call. The
+    /// default, `Ok(None)`, is for a backend that can't tell desktops apart
+    /// (GNOME, X11, macOS): the caller then ignores the option.
+    async fn current_desktop_windows(
+        &self,
+        _class: &WindowClass,
+    ) -> Result<Option<Vec<WindowId>>, BackendError> {
         Ok(None)
     }
 
