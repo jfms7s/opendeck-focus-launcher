@@ -148,6 +148,58 @@ pub trait WindowBackend: Send + Sync {
         };
         Ok(WindowSnapshot { windows, active })
     }
+
+    /// One snapshot per class, in the order given, for the live key state
+    /// poller: every class's windows plus the one focused window (the same
+    /// `active` in each). The default lists each class and reads the focused
+    /// window once, only when some class has a window; a backend whose tool
+    /// can answer for every class at once overrides it. Any failure fails
+    /// the whole call (the poller skips that tick); unlike `snapshot`, a
+    /// failed focus read is an error too, so a tick never paints a guess.
+    async fn snapshot_many(
+        &self,
+        classes: &[WindowClass],
+    ) -> Result<Vec<WindowSnapshot>, BackendError> {
+        let mut lists = Vec::with_capacity(classes.len());
+        for class in classes {
+            lists.push(self.list_windows(class).await?);
+        }
+        let active = if lists.iter().all(Vec::is_empty) {
+            None
+        } else {
+            self.active_window().await?
+        };
+        Ok(lists
+            .into_iter()
+            .map(|windows| WindowSnapshot {
+                windows,
+                active: active.clone(),
+            })
+            .collect())
+    }
+}
+
+/// `snapshot_many` from one listing of every window: `windows` gives each
+/// window's id and its match candidates (class, instance name) in the
+/// backend's stable order. Shared by the backends that list everything in
+/// one call (Window Calls, wmctrl).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub(crate) fn snapshots_from_listing<'a>(
+    classes: &[WindowClass],
+    windows: impl Iterator<Item = (WindowId, Vec<&'a str>)> + Clone,
+    active: Option<WindowId>,
+) -> Vec<WindowSnapshot> {
+    classes
+        .iter()
+        .map(|class| WindowSnapshot {
+            windows: windows
+                .clone()
+                .filter(|(_, candidates)| candidates.iter().any(|c| class.matches(c)))
+                .map(|(id, _)| id)
+                .collect(),
+            active: active.clone(),
+        })
+        .collect()
 }
 
 /// Near-miss cases every backend's parser must reject, shared so the
@@ -276,6 +328,39 @@ mod tests {
         assert_eq!(
             backend.window_titles(&[WindowId::new("w1")]).await,
             Ok(None)
+        );
+    }
+
+    #[tokio::test]
+    async fn default_snapshot_many_lists_each_class_and_reads_focus_once() {
+        let backend = OnlyLists {
+            windows: vec![WindowId::new("w1")],
+            active: Ok(Some(WindowId::new("w1"))),
+        };
+        let classes = [firefox(), WindowClass::parse("kate").unwrap()];
+        let many = backend.snapshot_many(&classes).await.unwrap();
+        assert_eq!(many.len(), 2);
+        for snap in &many {
+            assert_eq!(snap.windows, vec![WindowId::new("w1")]);
+            assert_eq!(snap.active, Some(WindowId::new("w1")));
+        }
+        assert_eq!(backend.snapshot_many(&[]).await.unwrap(), []);
+    }
+
+    #[tokio::test]
+    async fn default_snapshot_many_fails_on_a_failed_focus_read_and_skips_it_with_no_windows() {
+        let failing = OnlyLists {
+            windows: vec![WindowId::new("w1")],
+            active: Err(BackendError::CommandFailed("boom".into())),
+        };
+        assert!(failing.snapshot_many(&[firefox()]).await.is_err());
+        let empty = OnlyLists {
+            windows: vec![],
+            active: Err(BackendError::CommandFailed("must not be asked".into())),
+        };
+        assert_eq!(
+            empty.snapshot_many(&[firefox()]).await.unwrap(),
+            [WindowSnapshot::default()]
         );
     }
 

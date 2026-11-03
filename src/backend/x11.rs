@@ -2,7 +2,9 @@
 //! for the focused window and minimizing.
 
 use super::process::{check_status, run};
-use super::{BackendError, WindowBackend, WindowClass, WindowId};
+use super::{
+    BackendError, WindowBackend, WindowClass, WindowId, WindowSnapshot, snapshots_from_listing,
+};
 use async_trait::async_trait;
 use std::collections::HashMap;
 
@@ -66,6 +68,22 @@ fn parse_wmctrl_list(stdout: &str, class: &WindowClass) -> Vec<WindowId> {
                 .into_iter()
                 .any(|candidate| class.matches(candidate))
                 .then(|| canonical_id(id))
+        })
+        .collect()
+}
+
+/// Parses `wmctrl -l -x` output into every window's id and joined
+/// `<instance>.<class>` column, in `_NET_CLIENT_LIST` order, for
+/// `snapshot_many`. Matching then goes through `wm_class_candidates`, as in
+/// `parse_wmctrl_list`.
+fn parse_wmctrl_all(stdout: &str) -> Vec<(WindowId, &str)> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let id = parse_hex_id(parts.next()?)?;
+            let _desktop = parts.next()?;
+            Some((canonical_id(id), parts.next()?))
         })
         .collect()
 }
@@ -194,6 +212,28 @@ impl WindowBackend for X11Backend {
         )))
     }
 
+    /// One `wmctrl -l -x` for every class, then one `xdotool
+    /// getactivewindow` only if some class has a window.
+    async fn snapshot_many(
+        &self,
+        classes: &[WindowClass],
+    ) -> Result<Vec<WindowSnapshot>, BackendError> {
+        if classes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let output = run("wmctrl", &["-l", "-x"]).await?;
+        check_status(&output, "wmctrl -l -x")?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut snapshots = snapshots_from_wmctrl(&stdout, classes);
+        if snapshots.iter().any(|s| !s.windows.is_empty()) {
+            let active = self.active_window().await?;
+            for snapshot in &mut snapshots {
+                snapshot.active.clone_from(&active);
+            }
+        }
+        Ok(snapshots)
+    }
+
     /// One more `wmctrl -l -x`; a window that has gone since gets `""`.
     async fn window_titles(&self, ids: &[WindowId]) -> Result<Option<Vec<String>>, BackendError> {
         let output = run("wmctrl", &["-l", "-x"]).await?;
@@ -205,6 +245,17 @@ impl WindowBackend for X11Backend {
                 .collect(),
         ))
     }
+}
+
+/// Every class's windows from one `wmctrl -l -x` listing, `active` unset.
+fn snapshots_from_wmctrl(stdout: &str, classes: &[WindowClass]) -> Vec<WindowSnapshot> {
+    let all = parse_wmctrl_all(stdout);
+    snapshots_from_listing(
+        classes,
+        all.iter()
+            .map(|(id, joined)| (id.clone(), wm_class_candidates(joined))),
+        None,
+    )
 }
 
 /// `wmctrl -l -x` output with one window of `window_class` (both
@@ -223,6 +274,33 @@ mod tests {
     // clients); hostname redacted to `myhost`. Both WM_CLASS halves of the
     // Claude window contain dots.
     const REAL_WMCTRL: &str = include_str!("../../tests/fixtures/wmctrl-l-x.stdout");
+
+    #[test]
+    fn snapshot_many_matches_each_class_like_list_windows() {
+        let classes: Vec<WindowClass> = [
+            "com.anthropic.Claude",
+            "xwaylandvideobridge",
+            "nope",
+            "with space",
+        ]
+        .iter()
+        .map(|c| WindowClass::parse(c).unwrap())
+        .collect();
+        let snapshots = snapshots_from_wmctrl(REAL_WMCTRL, &classes);
+        assert_eq!(snapshots.len(), classes.len());
+        for (class, snapshot) in classes.iter().zip(&snapshots) {
+            assert_eq!(
+                snapshot.windows,
+                parse_wmctrl_list(REAL_WMCTRL, class),
+                "{class}"
+            );
+            assert_eq!(snapshot.active, None);
+        }
+        assert_eq!(snapshots[0].windows.len(), 1);
+        assert_eq!(snapshots[1].windows.len(), 1);
+        assert!(snapshots[2].windows.is_empty());
+        assert!(snapshots[3].windows.is_empty());
+    }
 
     #[test]
     fn every_window_offers_a_class_that_matches_it() {
