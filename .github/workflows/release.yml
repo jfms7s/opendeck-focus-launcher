@@ -52,6 +52,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The [package] name is the first `name =` line in Cargo.toml.
+      - name: Binary name from Cargo.toml
+        run: echo "BIN=$(sed -n 's/^name = "\(.*\)"/\1/p' Cargo.toml | head -n1)" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: 1.98.1
@@ -61,21 +64,9 @@ jobs:
       - run: cargo test --locked
       - run: cargo build --release --locked --target aarch64-apple-darwin
       - name: Check it is a signed arm64 binary that starts
-        run: |
-          bin=target/aarch64-apple-darwin/release/opendeck-focus-launcher
-          file "$bin"
-          # macOS's file says "executable arm64", Linux's "arm64 executable".
-          file -b "$bin" | grep -Eq '^Mach-O 64-bit (arm64 executable|executable arm64)'
-          # Apple Silicon kills unsigned binaries; the linker's ad-hoc
-          # signature must survive `strip = true`.
-          codesign --verify --verbose "$bin"
-          # Without OpenDeck's arguments it stops at the first missing flag,
-          # which proves it got as far as main().
-          out=$("$bin" 2>&1 || true)
-          echo "$out"
-          echo "$out" | grep -q "missing CLI flag: -port"
+        run: scripts/check-macos-binary.sh "target/aarch64-apple-darwin/release/$BIN"
       - name: Pack the binary (a tar keeps the executable bit; artifacts don't)
-        run: tar -cf macos-bin.tar -C target/aarch64-apple-darwin/release opendeck-focus-launcher
+        run: tar -cf macos-bin.tar -C target/aarch64-apple-darwin/release "$BIN"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: macos-bin
@@ -92,6 +83,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The [package] name is the first `name =` line in Cargo.toml.
+      - name: Binary name from Cargo.toml
+        run: echo "BIN=$(sed -n 's/^name = "\(.*\)"/\1/p' Cargo.toml | head -n1)" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
         with:
           toolchain: 1.98.1
@@ -107,14 +101,11 @@ jobs:
         run: |
           mkdir -p target/aarch64-apple-darwin/release
           tar -xf macos-bin.tar -C target/aarch64-apple-darwin/release
-          bin=target/aarch64-apple-darwin/release/opendeck-focus-launcher
-          test -x "$bin"
-          # macOS's file says "executable arm64", Linux's "arm64 executable".
-          file -b "$bin" | grep -Eq '^Mach-O 64-bit (arm64 executable|executable arm64)'
+          scripts/check-macos-binary.sh "target/aarch64-apple-darwin/release/$BIN" --static
       - name: Assemble the universal bundle (every CodePaths target, one manifest)
         run: |
           node build.mjs --all --zip --expect-version "$GITHUB_REF_NAME"
-          unzip -Z opendeck-focus-launcher.streamDeckPlugin | grep -E '^-rwx.*opendeck-focus-launcher-aarch64-apple-darwin$'
+          unzip -Z "$BIN.streamDeckPlugin" | grep -E "^-rwx.*$BIN-aarch64-apple-darwin\$"
       - name: Checksums
         run: sha256sum ./*.streamDeckPlugin > SHA256SUMS
       # After the bundle and checksums, so it is in neither; it only becomes
