@@ -153,10 +153,19 @@ fn titles_from(all: &[GnomeWindow], ids: &[WindowId]) -> Vec<String> {
         .collect()
 }
 
+/// The `u32` that Window Calls' `Activate`/`Minimize`/`Close` take. Ids are
+/// listed as `u64` (one large id must not fail the whole `List` parse), so an
+/// id past `u32::MAX` is reported as out of range rather than malformed.
 fn parse_id(id: &WindowId) -> Result<u32, BackendError> {
-    id.as_str()
+    let wide: u64 = id
+        .as_str()
         .parse()
-        .map_err(|_| BackendError::CommandFailed(format!("not a Window Calls id: {id}")))
+        .map_err(|_| BackendError::CommandFailed(format!("not a Window Calls id: {id}")))?;
+    u32::try_from(wide).map_err(|_| {
+        BackendError::CommandFailed(format!(
+            "Window Calls id {id} is out of range for its u32 methods"
+        ))
+    })
 }
 
 /// D-Bus error names meaning the extension (or GNOME Shell) isn't there, as
@@ -226,10 +235,21 @@ impl WindowBackend for GnomeWindowCallsBackend {
     }
 }
 
+/// A Window Calls `List` reply with one window of `window_class` (class
+/// and instance), run through the real parser and matcher.
+#[cfg(test)]
+pub(super) fn near_miss_probe(window_class: &str, wanted: &WindowClass) -> bool {
+    let json = format!(
+        r#"[{{"id": 1, "wm_class": "{window_class}", "wm_class_instance": "{window_class}", "focus": false}}]"#
+    );
+    !snapshot_from(&parse_all(&json).unwrap(), wanted)
+        .windows
+        .is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::NEAR_MISSES;
 
     // Not captured live (no GNOME session was available). The shape follows
     // the Window Calls extension's own `List()` implementation upstream
@@ -316,17 +336,13 @@ mod tests {
     }
 
     #[test]
-    fn contract_near_misses_do_not_match() {
-        for (window_class, wanted) in NEAR_MISSES {
-            let json = format!(
-                r#"[{{"id": 1, "wm_class": "{window_class}", "wm_class_instance": "{window_class}", "focus": false}}]"#
-            );
-            let all = parse_all(&json).unwrap();
-            assert!(
-                snapshot_from(&all, &class(wanted)).windows.is_empty(),
-                "{wanted} must not match {window_class}"
-            );
-        }
+    fn an_id_beyond_u32_is_out_of_range_not_malformed() {
+        let err = parse_id(&WindowId::new("4294967296")).unwrap_err();
+        assert!(err.to_string().contains("out of range"), "{err}");
+        let err = parse_id(&WindowId::new("abc")).unwrap_err();
+        assert!(err.to_string().contains("not a Window Calls id"), "{err}");
+        assert_eq!(parse_id(&WindowId::new("42")).unwrap(), 42);
+        assert_eq!(parse_id(&WindowId::new("4294967295")).unwrap(), u32::MAX);
     }
 
     #[test]

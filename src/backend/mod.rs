@@ -66,7 +66,9 @@ pub struct WindowSnapshot {
 
 /// The contract every backend must meet. `decide()` and the orchestration
 /// tests rely on it, and the fake backend in the tests cannot check it, so
-/// each adapter's parser tests do (see `NEAR_MISSES` below).
+/// each adapter's parser tests do (see `NEAR_MISSES` below). A new backend
+/// gets an arm in `near_miss_probe`; its exhaustive match makes the compiler
+/// ask for one.
 ///
 /// - **Matching:** `list_windows` returns exactly the windows for which
 ///   `WindowClass::matches` holds against the window's class or instance
@@ -144,9 +146,61 @@ pub(crate) const NEAR_MISSES: &[(&str, &str)] = &[
     ("org.kde.kate", "kate"),
 ];
 
+/// A backend's matching rule run in-process on synthetic tool output: does a
+/// window whose class (and instance) is `window_class` match `wanted`?
+#[cfg(test)]
+pub(crate) type NearMissProbe = fn(window_class: &str, wanted: &WindowClass) -> bool;
+
+/// The one near-miss check: `probe` rejects every `NEAR_MISSES` pair and
+/// accepts the exact class.
+#[cfg(test)]
+pub(crate) fn assert_rejects_near_misses(backend: &str, probe: NearMissProbe) {
+    for (window_class, wanted) in NEAR_MISSES {
+        let wanted = WindowClass::parse(wanted).unwrap();
+        assert!(
+            !probe(window_class, &wanted),
+            "{backend}: {wanted} must not match {window_class}"
+        );
+    }
+    let exact = WindowClass::parse("firefox").unwrap();
+    assert!(
+        probe("firefox", &exact),
+        "{backend}: firefox must match itself"
+    );
+}
+
+/// Every Linux backend's near-miss probe. The match has no `_` arm, so a new
+/// `BackendKind` does not compile until it gets an arm here (and is added to
+/// `every_backend_rejects_the_near_misses`).
+#[cfg(all(test, not(target_os = "macos")))]
+fn near_miss_probe(kind: BackendKind) -> Option<NearMissProbe> {
+    match kind {
+        BackendKind::X11 => Some(x11::near_miss_probe),
+        BackendKind::GnomeWindowCalls => Some(gnome::near_miss_probe),
+        // KWin evaluates the regex, so there is nothing to run in-process:
+        // `search_args_anchor_and_escape_the_class` pins the anchored,
+        // escaped pattern instead.
+        BackendKind::Kdotool => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn every_backend_rejects_the_near_misses() {
+        for kind in [
+            BackendKind::Kdotool,
+            BackendKind::GnomeWindowCalls,
+            BackendKind::X11,
+        ] {
+            if let Some(probe) = near_miss_probe(kind) {
+                assert_rejects_near_misses(kind.name(), probe);
+            }
+        }
+    }
 
     struct OnlyLists {
         windows: Vec<WindowId>,

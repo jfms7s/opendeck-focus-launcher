@@ -70,7 +70,7 @@ pub fn ordered(mut windows: Vec<(u32, i32)>) -> Vec<WindowId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::NEAR_MISSES;
+    use crate::backend::assert_rejects_near_misses;
 
     /// A process running `/Applications/<id>.app/Contents/MacOS/app`, whose
     /// bundle id is taken from the bundle name by `id_from_bundle`.
@@ -87,11 +87,9 @@ mod tests {
 
     #[test]
     fn contract_near_misses_do_not_match_a_bundle_id() {
-        for (window_class, wanted) in NEAR_MISSES {
-            let class = WindowClass::parse(wanted).unwrap();
-            let pids = matching_pids([app_process(7, window_class)], id_from_bundle, &class);
-            assert!(pids.is_empty(), "{wanted} must not match {window_class}");
-        }
+        assert_rejects_near_misses("mac_ids", |bundle_id, wanted| {
+            !matching_pids([app_process(7, bundle_id)], id_from_bundle, wanted).is_empty()
+        });
     }
 
     #[test]
