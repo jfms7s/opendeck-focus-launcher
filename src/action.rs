@@ -4,18 +4,23 @@
 
 use crate::apps::{AppEntry, Launcher, SystemLauncher};
 use crate::backend::{WindowBackend, WindowClass, WindowId};
+use crate::badge;
 use crate::catalog::AppCatalog;
 use crate::decision::{Gesture, HOLD_THRESHOLD, Intent, intent_for, is_hold};
 use crate::icon::IconCache;
 use crate::orchestrate::{
     self, Context, DialPreview, LaunchGuard, RunOutcome, Severity, report_for,
 };
-use crate::settings::{FocusOrLaunchSettings, find_app, resolve_display_name, resolve_icon};
+use crate::settings::{
+    FocusOrLaunchSettings, find_app, id_fallback_class, resolve_class, resolve_display_name,
+    resolve_icon,
+};
+use crate::watch::Watcher;
 use async_trait::async_trait;
 use openaction::{Action, Instance, OpenActionResult};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// One entry of the apps list sent to the property inspector.
@@ -123,7 +128,10 @@ fn release_intent(
 pub struct FocusOrLaunchAction {
     /// `None` when no backend fits this desktop session (see
     /// `select_backend`); every press then alerts instead of guessing.
-    backend: Option<Box<dyn WindowBackend>>,
+    backend: Option<Arc<dyn WindowBackend>>,
+    /// Keeps visible keys' running state current; `None` without a backend
+    /// and on macOS (frozen: live state ships Linux-only).
+    watcher: Option<Watcher>,
     launcher: Box<dyn Launcher>,
     catalog: AppCatalog,
     icons: IconCache,
@@ -142,8 +150,17 @@ pub struct FocusOrLaunchAction {
 
 impl FocusOrLaunchAction {
     pub fn new(backend: Option<Box<dyn WindowBackend>>) -> Self {
+        let backend: Option<Arc<dyn WindowBackend>> = backend.map(Arc::from);
+        let watcher = if cfg!(target_os = "macos") {
+            None
+        } else {
+            backend.as_ref().map(|backend| {
+                Watcher::new(Arc::clone(backend), Arc::new(crate::watch::DeckPainter))
+            })
+        };
         Self {
             backend,
+            watcher,
             launcher: Box::new(SystemLauncher),
             catalog: AppCatalog::system(),
             icons: IconCache::new(),
@@ -238,9 +255,31 @@ impl FocusOrLaunchAction {
                 None
             }
         };
-        match uri {
-            Some(uri) => instance.set_image(Some(uri.as_ref()), None).await,
-            None => instance.set_image(None::<String>, None).await,
+        match &uri {
+            Some(uri) => instance.set_image(Some(uri.as_ref()), None).await?,
+            None => instance.set_image(None::<String>, None).await?,
+        }
+        // After the plain icon is painted, so the poller's state paint
+        // comes after it, never before.
+        self.follow(&instance.instance_id, settings, apps, uri);
+        Ok(())
+    }
+
+    /// Tracks the key for live state when it shows one (see `watched`),
+    /// else stops tracking it.
+    fn follow(
+        &self,
+        instance_id: &str,
+        settings: &FocusOrLaunchSettings,
+        apps: &[AppEntry],
+        icon: Option<Arc<str>>,
+    ) {
+        let Some(watcher) = &self.watcher else {
+            return;
+        };
+        match watched(settings, apps, icon) {
+            Some((classes, icon)) => watcher.track(instance_id, classes, icon),
+            None => watcher.untrack(instance_id),
         }
     }
 
@@ -323,6 +362,9 @@ impl Action for FocusOrLaunchAction {
         self.pressed_at().remove(&instance.instance_id);
         self.pi_open().remove(&instance.instance_id);
         self.dial_cursors().remove(&instance.instance_id);
+        if let Some(watcher) = &self.watcher {
+            watcher.untrack(&instance.instance_id);
+        }
         Ok(())
     }
 
@@ -466,6 +508,30 @@ fn dial_title(preview: Option<&DialPreview>) -> String {
     }
 }
 
+/// What live state follows for a key, or `None` when it shows none: the
+/// option is off, the app isn't installed, its class is invalid (a press
+/// would alert), or there is no icon `badge::compose` can draw over. The
+/// classes are the key's class and, if it has one, its id fallback, as a
+/// press resolves them (the title filter and desktop scope aren't applied).
+fn watched(
+    settings: &FocusOrLaunchSettings,
+    apps: &[AppEntry],
+    icon: Option<Arc<str>>,
+) -> Option<(Vec<WindowClass>, Arc<str>)> {
+    if !settings.show_running_state {
+        return None;
+    }
+    let icon = icon.filter(|icon| badge::composable(icon))?;
+    let entry = find_app(settings, apps)?;
+    let mut classes = vec![WindowClass::parse(resolve_class(settings, entry)).ok()?];
+    if let Some(fallback) =
+        id_fallback_class(settings, entry).and_then(|f| WindowClass::parse(f).ok())
+    {
+        classes.push(fallback);
+    }
+    Some((classes, icon))
+}
+
 /// What a key shows: `None` means OpenDeck's default for that part.
 #[derive(Debug, PartialEq, Eq)]
 struct KeyFace<'a> {
@@ -581,6 +647,50 @@ mod tests {
         let no_backend = pi_window_count(None);
         assert_eq!(no_backend.open_windows, None);
         assert!(no_backend.windows_note.is_some());
+    }
+
+    const PNG: &str = "data:image/png;base64,iVBORw0KGgo=";
+
+    #[test]
+    fn a_key_is_watched_by_its_class_and_id_fallback() {
+        let s = settings("org.mozilla.firefox", true, true);
+        let apps = [app("org.mozilla.firefox", "firefox")];
+        let (classes, icon) = watched(&s, &apps, Some(PNG.into())).unwrap();
+        assert_eq!(
+            classes,
+            [
+                WindowClass::parse("firefox").unwrap(),
+                WindowClass::parse("org.mozilla.firefox").unwrap()
+            ]
+        );
+        assert_eq!(&*icon, PNG);
+    }
+
+    #[test]
+    fn a_class_override_is_watched_without_a_fallback() {
+        let mut s = settings("org.mozilla.firefox", true, true);
+        s.class_override = Some("Navigator".to_string());
+        let apps = [app("org.mozilla.firefox", "firefox")];
+        let (classes, _) = watched(&s, &apps, Some(PNG.into())).unwrap();
+        assert_eq!(classes, [WindowClass::parse("Navigator").unwrap()]);
+    }
+
+    #[test]
+    fn some_keys_are_not_watched() {
+        let apps = [app("org.mozilla.firefox", "firefox")];
+        let on = settings("org.mozilla.firefox", true, true);
+        let mut off = on.clone();
+        off.show_running_state = false;
+        assert!(watched(&off, &apps, Some(PNG.into())).is_none());
+        // No icon, or one resvg can't nest.
+        assert!(watched(&on, &apps, None).is_none());
+        assert!(watched(&on, &apps, Some("data:image/x-icon;base64,AAAB".into())).is_none());
+        // Not installed.
+        assert!(watched(&on, &[], Some(PNG.into())).is_none());
+        // A class a press would reject.
+        let mut bad = on.clone();
+        bad.class_override = Some("bad\"class".to_string());
+        assert!(watched(&bad, &apps, Some(PNG.into())).is_none());
     }
 
     #[test]

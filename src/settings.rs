@@ -48,6 +48,10 @@ pub struct FocusOrLaunchSettings {
     /// backends ignore it with a log line.
     #[serde(default)]
     pub current_desktop_only: bool,
+    /// The key shows whether its app is open (dimmed / dot / ring over the
+    /// icon, kept current by `watch`). Linux only: macOS is frozen.
+    #[serde(default = "default_true")]
+    pub show_running_state: bool,
 }
 
 fn default_true() -> bool {
@@ -73,6 +77,7 @@ impl Default for FocusOrLaunchSettings {
             hold_action: None,
             title_filter: None,
             current_desktop_only: false,
+            show_running_state: default_true(),
         }
     }
 }
@@ -347,6 +352,7 @@ mod tests {
         assert_eq!(from_missing_keys, FocusOrLaunchSettings::default());
         assert!(from_missing_keys.cycle_windows);
         assert!(from_missing_keys.minimize_when_focused);
+        assert!(from_missing_keys.show_running_state);
     }
 }
 
@@ -448,6 +454,7 @@ mod pi_contract_tests {
         assert_eq!(settings.custom_args.as_deref(), Some("--new-window"));
         assert_eq!(settings.title_filter(), Some("grafana"));
         assert!(settings.current_desktop_only);
+        assert!(!settings.show_running_state);
         assert_eq!(serde_json::to_value(&settings).unwrap(), value);
     }
 
@@ -466,6 +473,7 @@ mod pi_contract_tests {
         assert_eq!(settings.hold_action(), HoldAction::SameAsTap);
         assert_eq!(settings.title_filter(), None);
         assert!(!settings.current_desktop_only);
+        assert!(settings.show_running_state);
     }
 
     /// Hand-written in the nine-key shape v0.6 saved for a close-all key

@@ -1,6 +1,7 @@
 mod action;
 mod apps;
 mod backend;
+mod badge;
 // macOS discovery; tested on every platform.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod bundle;
@@ -10,6 +11,7 @@ mod host;
 mod icon;
 mod orchestrate;
 mod settings;
+mod watch;
 
 use action::FocusOrLaunchAction;
 use backend::{BackendKind, select_backend};
