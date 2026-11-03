@@ -42,6 +42,12 @@ pub struct FocusOrLaunchSettings {
     /// Only the app's windows whose title contains this text (ignoring case)
     /// count as the key's windows. Read through `title_filter()`.
     pub title_filter: Option<String>,
+    /// Only the app's windows on the current virtual desktop (or on every
+    /// desktop) count as the key's windows, so a window elsewhere doesn't
+    /// pull the desktop over: the key launches here instead. KDE only; other
+    /// backends ignore it with a log line.
+    #[serde(default)]
+    pub current_desktop_only: bool,
 }
 
 fn default_true() -> bool {
@@ -66,6 +72,7 @@ impl Default for FocusOrLaunchSettings {
             close_all_windows_on_hold: false,
             hold_action: None,
             title_filter: None,
+            current_desktop_only: false,
         }
     }
 }
@@ -440,6 +447,7 @@ mod pi_contract_tests {
         assert_eq!(settings.hold_action(), HoldAction::CloseAll);
         assert_eq!(settings.custom_args.as_deref(), Some("--new-window"));
         assert_eq!(settings.title_filter(), Some("grafana"));
+        assert!(settings.current_desktop_only);
         assert_eq!(serde_json::to_value(&settings).unwrap(), value);
     }
 
@@ -457,6 +465,7 @@ mod pi_contract_tests {
         assert!(!settings.close_all_windows_on_hold);
         assert_eq!(settings.hold_action(), HoldAction::SameAsTap);
         assert_eq!(settings.title_filter(), None);
+        assert!(!settings.current_desktop_only);
     }
 
     /// Hand-written in the nine-key shape v0.6 saved for a close-all key

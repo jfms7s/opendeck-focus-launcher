@@ -76,6 +76,7 @@ async function openInspector(settings) {
 		"exec_override",
 		"custom_args",
 		"title_filter",
+		"current_desktop_only",
 	]) {
 		els[id] = new FakeInput();
 	}
@@ -151,6 +152,7 @@ test("defaults match the plugin and blank text is saved as null", async () => {
 	const pi = await openInspector({});
 	assert.equal(pi.els.cycle_windows.checked, true);
 	assert.equal(pi.els.minimize_when_focused.checked, true);
+	assert.equal(pi.els.current_desktop_only.checked, false);
 	assert.equal(pi.els.hold_action.value, "same_as_tap");
 	pi.els.class_override.value = "   ";
 	pi.els.class_override.listeners.change();

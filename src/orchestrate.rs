@@ -10,6 +10,7 @@ use crate::settings::{
 };
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -263,6 +264,10 @@ async fn target_snapshot<'a>(
         snapshot.active
     );
 
+    if settings.current_desktop_only {
+        apply_desktop_scope(backend, &mut snapshot, &matched_class, &entry.id).await?;
+    }
+
     let mut guard_key = entry.id.clone();
     if let Some(filter) = settings.title_filter()
         && apply_title_filter(backend, &mut snapshot, filter, &entry.id).await?
@@ -274,6 +279,45 @@ async fn target_snapshot<'a>(
         snapshot,
         guard_key,
     })
+}
+
+/// Set once the "can't scope by desktop" warning has been logged.
+static DESKTOP_SCOPE_UNSUPPORTED_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// Keeps the windows on the current virtual desktop (or on every desktop).
+/// A backend that can't tell desktops apart leaves the list as it is, with
+/// one warning per run. A failed query is reported, not taken as "no
+/// windows here": launching on an unknown state could open a duplicate.
+async fn apply_desktop_scope(
+    backend: &dyn WindowBackend,
+    snapshot: &mut WindowSnapshot,
+    class: &WindowClass,
+    app_id: &str,
+) -> Result<(), RunOutcome> {
+    if snapshot.windows.is_empty() {
+        return Ok(());
+    }
+    let here = backend.current_desktop_windows(class).await.map_err(|e| {
+        log::warn!("{app_id}: could not read which windows are on this desktop: {e}");
+        backend_failure(e)
+    })?;
+    match here {
+        Some(here) => {
+            snapshot.windows.retain(|w| here.contains(w));
+            log::info!(
+                "{app_id}: {} window(s) on the current desktop",
+                snapshot.windows.len()
+            );
+        }
+        None => {
+            if !DESKTOP_SCOPE_UNSUPPORTED_LOGGED.swap(true, Ordering::Relaxed) {
+                log::warn!(
+                    "this window backend can't tell virtual desktops apart; ignoring \"Only windows on the current desktop\""
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Keeps the windows whose title contains `filter`, ignoring case. Returns
@@ -529,6 +573,11 @@ mod tests {
         /// Drop the last title, breaking the one-title-per-id contract.
         titles_short: bool,
         title_calls: Mutex<Vec<Vec<WindowId>>>,
+        /// The windows on the current desktop; `None` plays a backend that
+        /// can't tell desktops apart.
+        desktop_windows: Option<Vec<WindowId>>,
+        desktop_err: Option<BackendError>,
+        desktop_calls: Mutex<Vec<String>>,
     }
 
     #[async_trait]
@@ -577,6 +626,20 @@ mod tests {
                 Some(err) => Err(err.clone()),
                 None => Ok(self.active.clone()),
             }
+        }
+
+        async fn current_desktop_windows(
+            &self,
+            class: &WindowClass,
+        ) -> Result<Option<Vec<WindowId>>, BackendError> {
+            self.desktop_calls
+                .lock()
+                .unwrap()
+                .push(class.as_str().to_string());
+            if let Some(err) = &self.desktop_err {
+                return Err(err.clone());
+            }
+            Ok(self.desktop_windows.clone())
         }
 
         async fn window_titles(
@@ -1197,6 +1260,84 @@ mod tests {
             )
             .await;
         assert_eq!(outcome, RunOutcome::ClosedAll(ids(&["w1"])));
+    }
+
+    fn firefox_here_only() -> FocusOrLaunchSettings {
+        let mut s = firefox();
+        s.current_desktop_only = true;
+        s
+    }
+
+    #[tokio::test]
+    async fn a_window_only_on_another_desktop_counts_as_absent_and_the_key_launches() {
+        let h = Harness::new(RecordingFakeBackend {
+            desktop_windows: Some(Vec::new()),
+            ..with_windows("firefox", &["w1"])
+        });
+        let outcome = h.tap(&firefox_here_only(), &firefox_apps()).await;
+        assert!(matches!(outcome, RunOutcome::Launched(_)), "{outcome:?}");
+        assert_eq!(h.launched().len(), 1);
+        assert!(h.backend.activate_calls.lock().unwrap().is_empty());
+        assert_eq!(*h.backend.desktop_calls.lock().unwrap(), vec!["firefox"]);
+    }
+
+    #[tokio::test]
+    async fn the_key_focuses_its_window_on_this_desktop_not_the_one_elsewhere() {
+        let h = Harness::new(RecordingFakeBackend {
+            desktop_windows: Some(ids(&["w2"])),
+            ..with_windows("firefox", &["w1", "w2"])
+        });
+        h.tap(&firefox_here_only(), &firefox_apps()).await;
+        assert_eq!(*h.backend.activate_calls.lock().unwrap(), ids(&["w2"]));
+        assert!(h.launched().is_empty());
+    }
+
+    #[tokio::test]
+    async fn with_the_option_off_the_desktop_is_never_queried() {
+        let h = Harness::new(RecordingFakeBackend {
+            desktop_windows: Some(Vec::new()),
+            ..with_windows("firefox", &["w1"])
+        });
+        h.tap(&firefox(), &firefox_apps()).await;
+        assert!(h.backend.desktop_calls.lock().unwrap().is_empty());
+        assert_eq!(*h.backend.activate_calls.lock().unwrap(), ids(&["w1"]));
+    }
+
+    #[tokio::test]
+    async fn a_backend_without_desktops_ignores_the_option() {
+        let h = Harness::new(with_windows("firefox", &["w1"]));
+        h.tap(&firefox_here_only(), &firefox_apps()).await;
+        assert_eq!(h.backend.desktop_calls.lock().unwrap().len(), 1);
+        assert_eq!(*h.backend.activate_calls.lock().unwrap(), ids(&["w1"]));
+        assert!(h.launched().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_desktop_query_is_reported_and_does_not_launch() {
+        let h = Harness::new(RecordingFakeBackend {
+            desktop_err: Some(BackendError::CommandFailed("boom".into())),
+            ..with_windows("firefox", &["w1"])
+        });
+        let outcome = h.tap(&firefox_here_only(), &firefox_apps()).await;
+        assert_eq!(outcome, RunOutcome::ListWindowsFailed("boom".into()));
+        assert!(h.launched().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_desktop_scope_queries_the_class_the_id_fallback_matched() {
+        let h = Harness::new(RecordingFakeBackend {
+            desktop_windows: Some(ids(&["w1"])),
+            ..with_windows("chrome-abc-Default", &["w1"])
+        });
+        let apps = vec![app("chrome-abc-Default", "crx_abc")];
+        let mut s = settings("chrome-abc-Default", true, true);
+        s.current_desktop_only = true;
+        h.tap(&s, &apps).await;
+        assert_eq!(
+            *h.backend.desktop_calls.lock().unwrap(),
+            vec!["chrome-abc-Default"]
+        );
+        assert_eq!(*h.backend.activate_calls.lock().unwrap(), ids(&["w1"]));
     }
 
     #[tokio::test]

@@ -21,6 +21,8 @@
 			<h2>Behaviour</h2>
 			<label class="check"><input type="checkbox" id="cycle_windows" /> Cycle to the next window if several are open</label>
 			<label class="check"><input type="checkbox" id="minimize_when_focused" /> Minimize when already focused</label>
+			<label class="check"><input type="checkbox" id="current_desktop_only" /> Only windows on the current desktop</label>
+			<p class="hint">A window on another virtual desktop counts as not open, so the key launches one here instead of switching desktops. KDE Plasma only.</p>
 			<div class="field">
 				<label for="hold_action">Hold</label>
 				<select id="hold_action">
@@ -94,6 +96,7 @@
 			{ key: "exec_override", kind: "text", def: null, reset: true },
 			{ key: "custom_args", kind: "text", def: null, reset: true },
 			{ key: "title_filter", kind: "text", def: null, reset: true },
+			{ key: "current_desktop_only", kind: "bool", def: false },
 		];
 
 		window.connectOpenActionSocketData = new Promise((resolve) => {
