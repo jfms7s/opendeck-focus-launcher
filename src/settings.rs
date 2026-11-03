@@ -380,6 +380,51 @@ mod pi_contract_tests {
         assert_eq!(pi_field_keys(), rust_keys());
     }
 
+    /// Each `FIELDS` entry's `key` and its `def:` value, parsed as JSON.
+    fn pi_field_defaults() -> Vec<(String, serde_json::Value)> {
+        let start = PI_HTML
+            .find("const FIELDS = [")
+            .expect("FIELDS table in index.html");
+        let end = start + PI_HTML[start..].find("];").expect("end of FIELDS table");
+        PI_HTML[start..end]
+            .split("key: \"")
+            .skip(1)
+            .map(|rest| {
+                let key = rest.split('"').next().unwrap().to_string();
+                let def = rest
+                    .split("def: ")
+                    .nth(1)
+                    .unwrap_or_else(|| panic!("{key} has no def"));
+                let def = def.split([',', '}']).next().unwrap().trim();
+                let def = serde_json::from_str(def)
+                    .unwrap_or_else(|e| panic!("{key}: def {def:?} is not JSON: {e}"));
+                (key, def)
+            })
+            .collect()
+    }
+
+    /// The PI's `def` for each field is the Rust default. `hold_action` is
+    /// stored as `null` by Rust and `"same_as_tap"` by the PI: both must
+    /// resolve to the same hold action.
+    #[test]
+    fn the_pi_defaults_are_the_rust_defaults() {
+        let rust = FocusOrLaunchSettings::default();
+        let rust_value = serde_json::to_value(&rust).unwrap();
+        let defaults = pi_field_defaults();
+        assert_eq!(defaults.len(), rust_keys().len());
+        for (key, def) in defaults {
+            if key == "hold_action" {
+                let pi = FocusOrLaunchSettings {
+                    hold_action: def.as_str().map(str::to_string),
+                    ..FocusOrLaunchSettings::default()
+                };
+                assert_eq!(pi.hold_action(), rust.hold_action(), "{key}");
+            } else {
+                assert_eq!(def, rust_value[&key], "{key}");
+            }
+        }
+    }
+
     #[test]
     fn a_pi_payload_has_exactly_the_rust_fields_and_round_trips() {
         let value: serde_json::Value = serde_json::from_str(PI_PAYLOAD).unwrap();

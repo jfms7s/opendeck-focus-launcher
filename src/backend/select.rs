@@ -46,6 +46,16 @@ impl BackendKind {
     }
 }
 
+/// Whether the colon-separated `XDG_CURRENT_DESKTOP` value names `name`,
+/// ignoring ASCII case (`"ubuntu:GNOME"` is GNOME).
+#[cfg(not(target_os = "macos"))]
+pub fn desktop_is(current_desktop: Option<&str>, name: &str) -> bool {
+    current_desktop
+        .unwrap_or_default()
+        .split(':')
+        .any(|d| d.eq_ignore_ascii_case(name))
+}
+
 /// Chooses a backend from `XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE` and
 /// `DISPLAY`.
 ///
@@ -63,11 +73,10 @@ pub fn select_backend(
     session_type: Option<&str>,
     display: Option<&str>,
 ) -> Option<BackendKind> {
-    let desktop = current_desktop.unwrap_or_default().to_ascii_lowercase();
-    if desktop.split(':').any(|d| d == "kde") {
+    if desktop_is(current_desktop, "kde") {
         return Some(BackendKind::Kdotool);
     }
-    if desktop.split(':').any(|d| d == "gnome") {
+    if desktop_is(current_desktop, "gnome") {
         return Some(BackendKind::GnomeWindowCalls);
     }
     let is_wayland = session_type.is_some_and(|s| s.eq_ignore_ascii_case("wayland"));
@@ -90,6 +99,15 @@ pub fn select_backend(
 #[cfg(all(test, not(target_os = "macos")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_is_matches_one_colon_separated_name_ignoring_case() {
+        assert!(desktop_is(Some("ubuntu:GNOME"), "gnome"));
+        assert!(desktop_is(Some("KDE"), "kde"));
+        assert!(!desktop_is(None, "kde"));
+        assert!(!desktop_is(Some("kdesomething"), "kde"));
+        assert!(!desktop_is(Some(""), "kde"));
+    }
 
     #[test]
     fn picks_kdotool_for_kde_in_either_session_type() {

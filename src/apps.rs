@@ -4,6 +4,7 @@
 //! the Desktop Entry quoting rules, user-typed overrides with shell-style
 //! quoting only (no expansion), and the resulting argv is spawned directly.
 
+use crate::settings::non_empty;
 #[cfg(not(target_os = "macos"))]
 use freedesktop_desktop_entry::{DesktopEntry, Iter, default_paths};
 #[cfg(not(target_os = "macos"))]
@@ -32,11 +33,7 @@ pub struct AppEntry {
 /// entries that don't set `StartupWMClass`).
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn resolve_window_class(entry_id: &str, startup_wm_class: Option<&str>) -> String {
-    startup_wm_class
-        .map(str::trim)
-        .filter(|c| !c.is_empty())
-        .unwrap_or(entry_id)
-        .to_string()
+    non_empty(startup_wm_class).unwrap_or(entry_id).to_string()
 }
 
 /// Installed `.app` bundles (see `bundle.rs`).
@@ -116,11 +113,7 @@ fn list_installed_apps_from_paths<I: IntoIterator<Item = PathBuf>>(
                 .map_or_else(|| entry.id().to_string(), |n| n.to_string()),
             window_class: resolve_window_class(entry.id(), entry.startup_wm_class()),
             exec: entry.exec().unwrap_or_default().to_string(),
-            icon: entry
-                .icon()
-                .map(str::trim)
-                .filter(|i| !i.is_empty())
-                .map(str::to_string),
+            icon: non_empty(entry.icon()).map(str::to_string),
             path: entry.path.clone(),
         })
         .collect();
@@ -239,6 +232,17 @@ fn split_exec(value: &str) -> Result<Vec<RawArg>, ExecError> {
     Ok(args)
 }
 
+/// Field codes that expand to nothing here: files and URLs (never passed)
+/// and the deprecated codes.
+const VALUELESS_FIELD_CODES: &[&str] =
+    &["%f", "%F", "%u", "%U", "%d", "%D", "%n", "%N", "%v", "%m"];
+
+/// A standalone `Exec=` field code: the valueless ones plus `%i`, `%c` and
+/// `%k`, which `expand_field_codes` fills from the entry.
+fn is_field_code(word: &str) -> bool {
+    VALUELESS_FIELD_CODES.contains(&word) || matches!(word, "%i" | "%c" | "%k")
+}
+
 /// Expands one unquoted argument's field codes. No files or URLs are ever
 /// passed, so `%f %F %u %U` vanish; `%i` becomes `--icon <Icon>`, `%c` the
 /// name and `%k` the `.desktop` path, as the spec says; deprecated codes
@@ -246,7 +250,7 @@ fn split_exec(value: &str) -> Result<Vec<RawArg>, ExecError> {
 /// the spec) are dropped from the argument, keeping the rest of it.
 fn expand_field_codes(arg: &str, ctx: &ExecContext) -> Vec<String> {
     match arg {
-        "%f" | "%F" | "%u" | "%U" | "%d" | "%D" | "%n" | "%N" | "%v" | "%m" => Vec::new(),
+        code if VALUELESS_FIELD_CODES.contains(&code) => Vec::new(),
         "%i" => ctx
             .icon
             .map(|icon| vec!["--icon".to_string(), icon.to_string()])
@@ -310,26 +314,7 @@ pub fn parse_desktop_exec(raw: &str, ctx: &ExecContext) -> Result<Vec<String>, E
 /// codes (pasted from an `Exec=` line) are dropped.
 pub fn split_user_command(raw: &str) -> Result<Vec<String>, ExecError> {
     let words = shell_words::split(raw).map_err(|e| ExecError::BadArguments(e.to_string()))?;
-    Ok(words
-        .into_iter()
-        .filter(|w| {
-            !matches!(
-                w.as_str(),
-                "%f" | "%F"
-                    | "%u"
-                    | "%U"
-                    | "%i"
-                    | "%c"
-                    | "%k"
-                    | "%d"
-                    | "%D"
-                    | "%n"
-                    | "%N"
-                    | "%v"
-                    | "%m"
-            )
-        })
-        .collect())
+    Ok(words.into_iter().filter(|w| !is_field_code(w)).collect())
 }
 
 /// The argv to launch: `exec_override` (user-typed) if given, else the
@@ -342,10 +327,17 @@ pub fn build_launch_argv(
     build_launch_argv_on(cfg!(target_os = "macos"), entry, exec_override, custom_args)
 }
 
+/// How macOS opens an app by bundle id: `open -b <id>`. Also the `exec`
+/// shown for a discovered bundle (`bundle::read_bundle`), so the property
+/// inspector shows the command that runs.
+pub fn open_by_bundle_id(id: &str) -> Vec<String> {
+    vec!["open".to_string(), "-b".to_string(), id.to_string()]
+}
+
 /// On macOS an app (no override) is opened by bundle id, `open -b <id>`,
 /// and its custom arguments go after `--args`; elsewhere the entry's
 /// `Exec=` line is used. An override runs as written on both.
-fn build_launch_argv_on(
+pub(crate) fn build_launch_argv_on(
     macos: bool,
     entry: &AppEntry,
     exec_override: Option<&str>,
@@ -354,10 +346,7 @@ fn build_launch_argv_on(
     let (mut argv, extra_marker) = match exec_override {
         Some(cmd) => (split_user_command(cmd)?, None),
         None if macos && entry.id.trim().is_empty() => return Err(ExecError::Empty),
-        None if macos => (
-            vec!["open".to_string(), "-b".to_string(), entry.id.clone()],
-            Some("--args"),
-        ),
+        None if macos => (open_by_bundle_id(&entry.id), Some("--args")),
         None => (
             parse_desktop_exec(&entry.exec, &ExecContext::for_entry(entry))?,
             None,
@@ -495,6 +484,17 @@ mod tests {
             icon: None,
             path: PathBuf::from("/Applications/Safari.app"),
         }
+    }
+
+    #[test]
+    fn a_user_command_drops_every_standalone_field_code_but_keeps_percent() {
+        let codes: Vec<&str> = VALUELESS_FIELD_CODES
+            .iter()
+            .copied()
+            .chain(["%i", "%c", "%k"])
+            .collect();
+        let raw = format!("app {} %% --flag", codes.join(" "));
+        assert_eq!(split_user_command(&raw).unwrap(), ["app", "%%", "--flag"]);
     }
 
     #[test]

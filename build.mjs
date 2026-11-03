@@ -65,7 +65,9 @@ if (expectVersion !== null && expectVersion !== cargoVersion) {
 const actionUuid = manifest.Actions?.[0]?.UUID ?? fail("manifest.json has no Actions[0].UUID");
 const pluginUuid = actionUuid.split(".").slice(0, -1).join(".");
 if (!pluginUuid) fail(`cannot derive the plugin UUID from action UUID ${actionUuid}`);
-const rustUuid = readFileSync("src/action.rs", "utf8").match(/const UUID: &'static str = "([^"]+)"/)?.[1];
+// Tolerates rustfmt/clippy reformatting (`&str` vs `&'static str`, spacing);
+// the authoritative check is the Rust test `the_action_uuid_matches_the_manifest`.
+const rustUuid = readFileSync("src/action.rs", "utf8").match(/const\s+UUID\s*:\s*&\s*(?:'static\s+)?str\s*=\s*"([^"]+)"/)?.[1];
 if (rustUuid !== actionUuid) fail(`action UUID mismatch: manifest.json has ${actionUuid}, src/action.rs has ${rustUuid}`);
 
 const codePaths = manifest.CodePaths ?? fail("manifest.json has no CodePaths");
