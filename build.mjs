@@ -3,13 +3,22 @@
 // binaries for the targets in manifest.json's CodePaths, and optionally zips
 // it into <bin-name>.streamDeckPlugin.
 //
+// Canonical copy: github.com/jfms7s/opendeck-plugin-ci. Every opendeck-*
+// plugin repo carries this file byte for byte (scripts/check-drift.sh in that
+// repo checks it); change it there, then copy it to the plugins.
+//
 // Usage:
 //   node build.mjs                       package every CodePaths target that has been built
 //   node build.mjs --all                 require every CodePaths target (used by the release)
 //   node build.mjs <triple>...           package exactly these targets
 //   node build.mjs --check-only          only run the consistency checks below
-//   options: --zip                       also write <bin-name>.streamDeckPlugin
+//   options: --zip                       also write ./<bin-name>.streamDeckPlugin
+//            --release                   release package: every CodePaths binary must be in the
+//                                        bundle; writes dist/<bin-name>.streamDeckPlugin and
+//                                        dist/SHA256SUMS (the assets of a GitHub release)
 //            --expect-version <v|vX.Y.Z> fail unless Cargo.toml and manifest.json are at this version
+//            --tag <vX.Y.Z>              like --expect-version, but the tag must be exactly v<version>
+//   aliases: --require-all = --all, --check-version = --check-only
 //
 // Build the binaries first: cargo build --release --locked --target <triple>
 // (a plain `cargo build --release` counts for the host triple).
@@ -17,8 +26,20 @@
 // Names are read from Cargo.toml ([package] name) and manifest.json (the
 // plugin UUID is the first action's UUID minus its last segment), so this
 // file carries no per-plugin constants.
-import { cpSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+	chmodSync,
+	copyFileSync,
+	cpSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 function fail(message) {
@@ -31,21 +52,25 @@ const args = process.argv.slice(2);
 let requireAll = false;
 let checkOnly = false;
 let zip = false;
+let release = false;
 let expectVersion = null;
+let tag = null;
 const requested = [];
 for (let i = 0; i < args.length; i++) {
 	const arg = args[i];
-	if (arg === "--all") requireAll = true;
-	else if (arg === "--check-only") checkOnly = true;
+	if (arg === "--all" || arg === "--require-all") requireAll = true;
+	else if (arg === "--check-only" || arg === "--check-version") checkOnly = true;
 	else if (arg === "--zip") zip = true;
+	else if (arg === "--release") release = true;
 	else if (arg === "--expect-version") {
-		expectVersion = args[++i];
-		if (!expectVersion) fail("--expect-version needs a value");
+		expectVersion = args[++i] ?? fail("--expect-version needs a value");
 		expectVersion = expectVersion.replace(/^v/, "");
-	} else if (arg.startsWith("-")) fail(`unknown option ${arg}`);
+	} else if (arg === "--tag") tag = args[++i] ?? fail("--tag needs a value");
+	else if (arg.startsWith("-")) fail(`unknown option ${arg}`);
 	else requested.push(arg);
 }
 if (requireAll && requested.length) fail("pass either --all or explicit targets, not both");
+if (release && !requested.length) requireAll = true;
 
 // --- metadata and consistency checks --------------------------------------
 const cargoToml = readFileSync("Cargo.toml", "utf8");
@@ -61,20 +86,45 @@ if (cargoVersion !== manifest.Version) {
 if (expectVersion !== null && expectVersion !== cargoVersion) {
 	fail(`version mismatch: expected ${expectVersion} (from the tag) but Cargo.toml and manifest.json are ${cargoVersion}`);
 }
+if (tag !== null && tag !== `v${cargoVersion}`) {
+	fail(`tag ${tag} does not match the crate/manifest version ${cargoVersion} (expected v${cargoVersion})`);
+}
 
-const actionUuid = manifest.Actions?.[0]?.UUID ?? fail("manifest.json has no Actions[0].UUID");
-const pluginUuid = actionUuid.split(".").slice(0, -1).join(".");
-if (!pluginUuid) fail(`cannot derive the plugin UUID from action UUID ${actionUuid}`);
-// Tolerates rustfmt/clippy reformatting (`&str` vs `&'static str`, spacing);
-// the authoritative check is the Rust test `the_action_uuid_matches_the_manifest`.
-const rustUuid = readFileSync("src/action.rs", "utf8").match(/const\s+UUID\s*:\s*&\s*(?:'static\s+)?str\s*=\s*"([^"]+)"/)?.[1];
-if (rustUuid !== actionUuid) fail(`action UUID mismatch: manifest.json has ${actionUuid}, src/action.rs has ${rustUuid}`);
+// Every action UUID is "<plugin uuid>.<action>"; the bundle directory is
+// "<plugin uuid>.sdPlugin".
+const actionUuids = (manifest.Actions ?? []).map((a) => a?.UUID).filter(Boolean);
+if (actionUuids.length === 0) fail("manifest.json declares no Actions with a UUID");
+const pluginUuid = actionUuids[0].split(".").slice(0, -1).join(".");
+if (!pluginUuid) fail(`cannot derive the plugin UUID from action UUID ${actionUuids[0]}`);
+for (const uuid of actionUuids) {
+	if (!uuid.startsWith(`${pluginUuid}.`)) fail(`action ${uuid} is not under plugin ${pluginUuid}`);
+}
+
+// Every literal `const UUID: &str = "<plugin uuid>.<action>"` in src/ must be
+// an action the manifest declares (other UUIDs, e.g. a test double's, are
+// ignored). Tolerates rustfmt/clippy reformatting (`&str` vs
+// `&'static str`, spacing); a UUID computed rather than written as a literal is
+// not seen, and the Rust tests that read manifest.json remain the authority.
+function rustFiles(dir) {
+	if (!existsSync(dir)) return [];
+	return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+		const path = join(dir, entry.name);
+		if (entry.isDirectory()) return rustFiles(path);
+		return entry.name.endsWith(".rs") ? [path] : [];
+	});
+}
+const uuidConst = /const\s+UUID\s*:\s*&\s*(?:'static\s+)?str\s*=\s*"([^"]+)"/g;
+for (const file of rustFiles("src")) {
+	for (const [, uuid] of readFileSync(file, "utf8").matchAll(uuidConst)) {
+		if (uuid.startsWith(`${pluginUuid}.`) && !actionUuids.includes(uuid)) fail(`action UUID mismatch: ${file} has ${uuid}, which assets/manifest.json does not declare`);
+	}
+}
 
 const codePaths = manifest.CodePaths ?? fail("manifest.json has no CodePaths");
 for (const [triple, file] of Object.entries(codePaths)) {
 	if (file !== `${binName}-${triple}`) fail(`CodePaths["${triple}"] is ${file}, expected ${binName}-${triple}`);
 }
-for (const key of ["CodePathLin", "CodePathMac"]) {
+for (const key of ["CodePathLin", "CodePathMac", "CodePathWin"]) {
 	if (manifest[key] && !Object.values(codePaths).includes(manifest[key])) {
 		fail(`${key} ${manifest[key]} is not one of the CodePaths binaries`);
 	}
@@ -88,7 +138,7 @@ if (checkOnly) {
 // --- pick the binaries -------------------------------------------------------
 function hostTriple() {
 	try {
-		return execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (.+)$/m)?.[1];
+		return execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host:\s*(\S+)/m)?.[1];
 	} catch {
 		return undefined;
 	}
@@ -96,18 +146,27 @@ function hostTriple() {
 const host = hostTriple();
 
 // The newest build for a triple: target/<triple>/release, or target/release
-// for the host triple.
+// for the host triple. When both exist the newer file wins and is announced,
+// so an old cross build never wins silently.
+const announced = new Set();
 function binaryFor(triple) {
 	const candidates = [join("target", triple, "release", binName)];
 	if (triple === host) candidates.push(join("target", "release", binName));
-	return candidates
+	const existing = candidates
 		.filter((p) => existsSync(p))
-		.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+		.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+	if (existing.length > 1 && !announced.has(existing[0])) {
+		announced.add(existing[0]);
+		console.log(`build.mjs: using ${existing[0]} (newer than ${existing[1]})`);
+	}
+	return existing[0];
 }
 
 let targets;
 if (requested.length) {
-	for (const t of requested) if (!(t in codePaths)) fail(`${t} is not in manifest.json CodePaths`);
+	for (const t of requested) {
+		if (!(t in codePaths)) fail(`${t} is not in manifest.json CodePaths - OpenDeck would never launch it`);
+	}
 	targets = requested;
 } else {
 	targets = Object.keys(codePaths);
@@ -123,8 +182,14 @@ for (const t of missing) console.warn(`build.mjs: skipping ${t} (not built)`);
 
 // --- assemble ---------------------------------------------------------------
 const bundle = `${pluginUuid}.sdPlugin`;
+const archive = `${binName}.streamDeckPlugin`;
 const outDir = join("dist", bundle);
 rmSync(outDir, { recursive: true, force: true });
+// Never leave a package that doesn't match this bundle: zip appends to an
+// existing archive, so a stale one has to go before a new one is written.
+rmSync(join("dist", archive), { force: true });
+rmSync(join("dist", "SHA256SUMS"), { force: true });
+if (zip) rmSync(archive, { force: true });
 mkdirSync(outDir, { recursive: true });
 cpSync("assets/manifest.json", join(outDir, "manifest.json"));
 // Not every plugin has layouts or a property inspector - copy what exists.
@@ -133,14 +198,37 @@ for (const dir of ["icons", "layouts", "propertyInspector"]) {
 	if (existsSync(join("assets", dir))) cpSync(join("assets", dir), join(outDir, dir), { recursive: true });
 }
 for (const [triple, bin] of built) {
-	copyFileSync(bin, join(outDir, codePaths[triple]));
+	const dest = join(outDir, codePaths[triple]);
+	copyFileSync(bin, dest);
+	chmodSync(dest, 0o755);
 	console.log(`build.mjs: ${triple} <- ${bin}`);
+}
+
+// Every binary the manifest points OpenDeck at should be in the bundle: a hard
+// error for a release, a note for a local build.
+const wanted = [...new Set([...Object.values(codePaths), ...["CodePathLin", "CodePathMac", "CodePathWin"].map((k) => manifest[k])])].filter(Boolean);
+const absent = wanted.filter((file) => !existsSync(join(outDir, file)));
+if (absent.length) {
+	const message = `bundle lacks manifest code paths: ${absent.join(", ")}`;
+	if (release || requireAll) fail(`${message} - build every target in CodePaths`);
+	console.warn(`build.mjs: note: ${message} (fine for a local build)`);
 }
 console.log(`built ${outDir} (${built.map(([t]) => t).join(", ")})`);
 
+// --- package ------------------------------------------------------------------
+function zipBundle(into) {
+	const result = spawnSync("zip", ["-r", "-X", "-q", into, bundle], { cwd: "dist", stdio: "inherit" });
+	if (result.error || result.status !== 0) {
+		fail(`zip failed${result.error ? `: ${result.error.message}` : ""} (is \`zip\` installed?)`);
+	}
+}
 if (zip) {
-	const archive = `${binName}.streamDeckPlugin`;
-	rmSync(archive, { force: true });
-	execFileSync("zip", ["-r", "-X", join("..", archive), bundle], { cwd: "dist", stdio: "inherit" });
-	console.log(`wrote ${archive}`);
+	zipBundle(join("..", archive));
+	console.log(`build.mjs: wrote ${archive}`);
+}
+if (release) {
+	zipBundle(archive);
+	const digest = createHash("sha256").update(readFileSync(join("dist", archive))).digest("hex");
+	writeFileSync(join("dist", "SHA256SUMS"), `${digest}  ${archive}\n`);
+	console.log(`build.mjs: packaged dist/${archive} (sha256 ${digest}) and dist/SHA256SUMS`);
 }
