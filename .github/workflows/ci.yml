@@ -4,7 +4,7 @@ name: CI
 # `msrv` must match rust-version in Cargo.toml.
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
   schedule:
     - cron: "0 6 * * 1"
